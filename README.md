@@ -35,8 +35,9 @@ and open http://localhost:5173. Both models load on their own, each with its ana
 
 ## Using it
 
-1. **Model**: the vortex model (A) and the particle model (B) are already loaded. Untick one to run only the
-   other; each frame takes about the sum of both models' times, so one model alone is faster.
+1. **Model**: one checkbox per model (vortex, particles, particles + tracking). Vortex and particles are loaded
+   on start; the third downloads when you tick it. Any ticked models run together, and each frame takes about
+   the sum of their times, so fewer models is faster.
 2. **Config**: how each model reads its input and output. Filled in from the model itself; you normally don't
    touch it.
 3. **Pipeline**: optional. The models already bring their own; load a `.js` here only to run another

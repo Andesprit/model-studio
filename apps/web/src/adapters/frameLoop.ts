@@ -35,17 +35,17 @@ interface Slot {
 
 /**
  * Runs model inference on a video element and draws results on an overlay canvas.
- * Up to two models (slots A and B) run on the same frame, one after the other, and their results are drawn together.
+ * Any number of models (slots A, B, C…) run on the same frame, one after the other, and their results are drawn together.
  * At most one frame is in flight; frames that arrive meanwhile are dropped, so latency stays bounded.
  */
 export class FrameLoop {
   private renderer: Renderer;
-  private slots: (Slot | null)[] = [null, null];
+  private slots: (Slot | null)[] = [];
   /** Pipeline loaded by the user (step 3); runs on every model's results together. */
   private pipeline: PipelineRunner | null = null;
   /** Each slot's own pipeline (e.g. embedded in its model); runs on that model's output only. Kept apart from
    * the slot so turning a model off and on keeps its pipeline. */
-  private modelPipelines: (PipelineRunner | null)[] = [null, null];
+  private modelPipelines: (PipelineRunner | null)[] = [];
   private busy = false;
   private inflight: Promise<void> = Promise.resolve();
   /** Set after an error; cleared when the model or config changes. */
@@ -64,8 +64,9 @@ export class FrameLoop {
     this.renderer = new Renderer(overlay);
   }
 
-  /** Puts a model in slot 0 (A) or 1 (B), or empties the slot with null. */
+  /** Puts a model in a slot (0 = A, 1 = B…), or empties the slot with null. */
   setModel(slot: number, runtime: ModelRuntime | null, config: ModelConfig | null) {
+    while (this.slots.length <= slot) this.slots.push(null);
     const prev = this.slots[slot];
     this.slots[slot] = runtime && config ? { runtime, config, grabber: prev?.grabber ?? new FrameGrabber() } : null;
     this.resetPipeline();
@@ -98,6 +99,7 @@ export class FrameLoop {
 
   /** Sets (or clears with null) the pipeline that runs on one slot's model only. */
   setModelPipeline(slot: number, pipeline: PipelineRunner | null) {
+    while (this.modelPipelines.length <= slot) this.modelPipelines.push(null);
     this.modelPipelines[slot] = pipeline;
     this.halted = false;
     this.refresh();

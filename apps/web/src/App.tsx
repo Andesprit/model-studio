@@ -24,21 +24,35 @@ type Source = "camera" | "file" | null;
 const MODELS_INDEX = `${import.meta.env.BASE_URL}models/index.json`;
 
 /** Sample models loaded on startup as model A and model B. */
-const PRELOAD = ["vortex_detector_fp32_with_pipeline.onnx", "particle_detector_with_pipeline.onnx"];
+const VORTEX = "vortex_detector_fp32_with_pipeline.onnx";
+const PARTICLES = "particle_detector_with_pipeline.onnx";
+const PRELOAD = [VORTEX, PARTICLES];
 
 /** Short clips in public/examples, for trying the models without a video of your own. */
 const EXAMPLE_VIDEOS = [
-  { label: "Vortex", file: "vortex.mp4", models: [true, false], hint: "A vortex wall: model A" },
-  { label: "Particles", file: "particles.mp4", models: [false, true], hint: "Particles in a pump: model B" },
-  { label: "Both", file: "both.mp4", models: [true, true], hint: "A turbine tube with a vortex rope and flakes: both models" },
+  { label: "Vortex", file: "vortex.mp4", models: [VORTEX], hint: "A vortex wall: the vortex model" },
+  { label: "Particles", file: "particles.mp4", models: [PARTICLES], hint: "Particles in a pump: the particle model" },
+  { label: "Both", file: "both.mp4", models: [VORTEX, PARTICLES], hint: "A turbine tube with a vortex rope and flakes: both models" },
 ];
 
-interface SecondModel {
-  runtime: ModelRuntime;
+/** One entry of the model list: a sample to download or a file the user picked. Loaded the first time it is ticked. */
+interface ModelEntry {
+  key: string;
   name: string;
-  config: ModelConfig;
+  sample?: Sample;
+  bytes?: Uint8Array;
+  runtime?: ModelRuntime;
+  config?: ModelConfig;
+  /** A config file the user loaded for this model; it wins over auto-detection, also on reload. */
+  explicitConfig?: ModelConfig;
   configSource: string;
+  /** Nothing told us how to decode this model; the decoder is a default the user should confirm. */
   decoderGuessed: boolean;
+  /** Whether it runs; unticking keeps it loaded so it can be turned back on instantly. */
+  on: boolean;
+  loading: boolean;
+  /** Its embedded pipeline may run without asking: the app's own samples, or after the user said yes. */
+  trusted: boolean;
 }
 
 /** Calibration units: [symbol used in results, name shown in the dropdown]. */
@@ -62,30 +76,16 @@ export function App() {
   const [sourceName, setSourceName] = useState("");
   const [aspect, setAspect] = useState(16 / 9);
   const [backendPref, setBackendPref] = useState<BackendPreference>("auto");
-  const [runtime, setRuntime] = useState<ModelRuntime | null>(null);
-  const [modelName, setModelName] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [config, setConfig] = useState<ModelConfig | null>(null);
-  const [explicitConfig, setExplicitConfig] = useState<ModelConfig | null>(null);
-  const [configSource, setConfigSource] = useState("");
-  /** Nothing told us how to decode this model; the decoder is a default the user should confirm. */
-  const [decoderGuessed, setDecoderGuessed] = useState(false);
+  /** Every model in the list; its index is its slot in the frame loop. */
+  const [models, setModels] = useState<ModelEntry[]>([]);
+  const modelsRef = useRef<ModelEntry[]>([]);
+  const loading = models.some((m) => m.loading);
   /** Text of the last decoder failure; while it's the error shown, it already explains what to do. */
   const [decodeErrorText, setDecodeErrorText] = useState("");
-  /** Optional second model (slot B), run on the same frames as model A. Its config is auto-detected. */
-  const [modelB, setModelB] = useState<SecondModel | null>(null);
-  /** Whether each loaded model runs; unticking keeps it loaded so it can be turned back on instantly. */
-  const [useA, setUseA] = useState(true);
-  const [useB, setUseB] = useState(true);
   const preloadStarted = useRef(false);
-  /** Bytes of the model in each slot, kept so a backend change can reload it. */
-  const loadedBytes = useRef<({ bytes: Uint8Array; name: string; options?: Record<string, unknown>; trusted: boolean } | null)[]>([
-    null,
-    null,
-  ]);
   /** Pipelines embedded in each slot's model; each runs on that model's output only. */
-  const [modelPipelines, setModelPipelines] = useState<(PipelineDefinition | null)[]>([null, null]);
-  const modelRunners = useRef<(PipelineRunner | null)[]>([null, null]);
+  const [modelPipelines, setModelPipelines] = useState<(PipelineDefinition | null)[]>([]);
+  const modelRunners = useRef<(PipelineRunner | null)[]>([]);
   const [pipeline, setPipeline] = useState<PipelineDefinition | null>(null);
   const [pipelineOptions, setPipelineOptions] = useState<Record<string, unknown>>({});
   const [frameSize, setFrameSize] = useState({ width: 0, height: 0 });
@@ -95,7 +95,6 @@ export function App() {
   const [drawingLine, setDrawingLine] = useState(false);
   const calPixels = calLine ? lineLength(calLine) : 0;
   const calibration = useMemo(() => makeCalibration(calPixels, calAmount, calUnit), [calPixels, calAmount, calUnit]);
-  const [samples, setSamples] = useState<Sample[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [error, setError] = useState("");
 
@@ -112,25 +111,22 @@ export function App() {
     p.start();
     fetch(MODELS_INDEX)
       .then((r) => (r.ok ? r.json() : []))
+      .catch(() => [])
       .then((list: Sample[]) => {
-        setSamples(list);
-        // Start with the vortex (A) + particle (B) models loaded and on. The ref keeps React's dev double-mount from loading twice.
+        // The ref keeps React's dev double-mount from loading twice.
         if (preloadStarted.current) return;
         preloadStarted.current = true;
-        void preload(list);
-      })
-      .catch(() => setSamples([]));
+        updateModels(() => list.map((sample) => ({ key: sample.url, name: sample.name, sample, configSource: "", decoderGuessed: false, on: false, loading: false, trusted: true })));
+        // Start with the vortex and particle models loaded and on; the rest download when ticked.
+        void (async () => {
+          for (const file of PRELOAD) {
+            const i = list.findIndex((x) => x.url.split("/").pop() === file);
+            if (i >= 0) await toggleModel(i, true);
+          }
+        })();
+      });
     return () => p.stop();
   }, []);
-
-  // Config edits only swap config; model swaps go through setModel.
-  useEffect(() => {
-    if (config) loopRef.current?.setConfig(0, config);
-  }, [config]);
-  const configB = modelB?.config;
-  useEffect(() => {
-    if (configB) loopRef.current?.setConfig(1, configB);
-  }, [configB]);
 
   // A new runner starts with fresh pipeline state.
   useEffect(() => {
@@ -164,23 +160,29 @@ export function App() {
       frameSize,
       calibration,
       // Only the models that were switched on, each with what its own pipeline measured.
-      models: [
-        ...(useA && runtime ? [model(0, modelName, runtime.backend)] : []),
-        ...(useB && modelB ? [model(1, modelB.name, modelB.runtime.backend)] : []),
-      ],
+      models: models.flatMap((m, i) => (m.on && m.runtime ? [model(i, m.name, m.runtime.backend)] : [])),
       // A pipeline loaded in step 3 runs on all models together; its results go here.
       ...(global && { pipeline: global.pipeline.name, ...global.summary() }),
     };
-    const names = [global?.pipeline.name, ...modelRunners.current.map((r) => r?.pipeline.name)].filter(Boolean);
+    const names = [global?.pipeline.name, ...modelRunners.current.filter((_, i) => models[i]?.on).map((r) => r?.pipeline.name)].filter(Boolean);
     const base = `${names.join("+") || "results"}-${(sourceName || "camera").replace(/\.[^.]+$/, "")}`;
     downloadJson(`${base}-results.json`, results);
   }
+
+  /** Replaces the model list (keeping the ref, which async code reads, in step with the state). */
+  function updateModels(fn: (m: ModelEntry[]) => ModelEntry[]) {
+    modelsRef.current = fn(modelsRef.current);
+    setModels(modelsRef.current);
+  }
+
+  const patchModel = (i: number, patch: Partial<ModelEntry>) => updateModels((ms) => ms.map((m, k) => (k === i ? { ...m, ...patch } : m)));
 
   /**
    * The pipeline embedded in a model file, if any. A model from outside the app (picked from disk) runs
    * code when its pipeline loads, so the user is asked first; the app's own sample models are trusted.
    */
-  async function embeddedPipeline(bytes: Uint8Array, name: string, slot: number): Promise<PipelineDefinition | null> {
+  async function embeddedPipeline(i: number, bytes: Uint8Array): Promise<PipelineDefinition | null> {
+    const entry = modelsRef.current[i];
     let source: string | undefined;
     try {
       source = readOnnxMetadata(bytes)[PIPELINE_METADATA_KEY];
@@ -188,174 +190,107 @@ export function App() {
       return null; // unreadable metadata: no pipeline
     }
     if (!source) return null;
-    const entry = loadedBytes.current[slot];
-    if (entry && !entry.trusted) {
-      const ok = window.confirm(`"${name}" includes a pipeline (code that runs in this page to measure its results). Run it?`);
+    if (!entry.trusted) {
+      const ok = window.confirm(`"${entry.name}" includes a pipeline (code that runs in this page to measure its results). Run it?`);
       if (!ok) return null;
-      entry.trusted = true; // don't ask again when the same model reloads (e.g. backend change)
+      patchModel(i, { trusted: true }); // don't ask again when the same model reloads (e.g. backend change)
     }
     try {
       return await loadPipelineSource(source);
     } catch (e) {
-      setError(`${name}: its embedded pipeline failed to load: ${errorMessage(e)}`);
+      setError(`${entry.name}: its embedded pipeline failed to load: ${errorMessage(e)}`);
       return null;
     }
   }
 
   function setModelPipeline(slot: number, def: PipelineDefinition | null) {
-    setModelPipelines((p) => p.map((d, i) => (i === slot ? def : d)));
+    setModelPipelines((p) => {
+      const next = [...p];
+      while (next.length <= slot) next.push(null);
+      next[slot] = def;
+      return next;
+    });
   }
 
-  function editConfig(next: ModelConfig) {
+  function editConfig(i: number, next: ModelConfig) {
     setError(""); // a previous inference error may not apply to the new settings
-    if (next.decoder !== config?.decoder) setDecoderGuessed(false); // the user picked one
-    setConfig(next);
+    const m = modelsRef.current[i];
+    patchModel(i, { config: next, decoderGuessed: m.decoderGuessed && next.decoder === m.config?.decoder }); // picking another decoder answers the guess
+    loopRef.current!.setConfig(i, next);
   }
 
-  function editConfigB(next: ModelConfig) {
-    setError("");
-    setModelB((m) => m && { ...m, config: next, decoderGuessed: m.decoderGuessed && next.decoder === m.config.decoder });
+  /** Downloads a model from the sample list. */
+  async function download(sample: Sample): Promise<Uint8Array> {
+    const url = new URL(sample.url, new URL(MODELS_INDEX, location.href)).href;
+    const res = await fetch(url);
+    // The dev server answers a missing file with the app's HTML page, not a 404.
+    if (!res.ok || res.headers.get("content-type")?.includes("text/html")) {
+      throw new Error(`Could not download ${sample.name} from ${url} (HTTP ${res.status})`);
+    }
+    return new Uint8Array(await res.arrayBuffer());
   }
 
-  const shapeWarning = useA && runtime && config ? checkInputShape(config, runtime.input) : null;
-  const shapeWarningB = useB && modelB ? checkInputShape(modelB.config, modelB.runtime.input) : null;
-  // A decode error already gives the same advice, with the actual reason.
-  const showGuessWarnings = !(error && error === decodeErrorText);
-  const decoderWarning =
-    useA && runtime && config && decoderGuessed && !pipeline?.decode && showGuessWarnings
-      ? `We don't know how to read ${modelB ? "model A's" : "this model's"} output, so we're trying "${config.decoder}". ` +
-        "If the results look wrong, pick another decoder in step 2, or load a Config .json or a Pipeline .js with its own decode."
-      : null;
-  const decoderWarningB =
-    useB && modelB?.decoderGuessed && showGuessWarnings
-      ? `We don't know how to read model B's output, so we're trying "${modelB.config.decoder}". ` +
-        "If the results look wrong, pick another decoder for model B in step 2."
-      : null;
-
-  /** Loads a model into slot 0 (A) or 1 (B). `on` says whether it starts switched on. */
-  async function loadModel(
-    bytes: Uint8Array,
-    name: string,
-    slot = 0,
-    backend = backendPref,
-    on = true,
-    options?: Record<string, unknown>,
-    trusted = false,
-  ) {
-    const prev = loadedBytes.current[slot];
-    // A reload of the same model (backend change) keeps the user's earlier answer about its pipeline.
-    loadedBytes.current[slot] = { bytes, name, options, trusted: trusted || (prev?.bytes === bytes && prev.trusted) };
-    if (slot === 1) return loadModelB(bytes, name, backend, on, options);
-    setLoading(true);
+  /** Loads (downloading first if needed) the model in slot `i`. `on` says whether it starts switched on. */
+  async function loadModel(i: number, on: boolean, backend = backendPref) {
+    const entry = modelsRef.current[i];
+    patchModel(i, { loading: true });
     setError("");
     try {
-      if (runtime) {
-        await loopRef.current!.detach(0); // let the in-flight frame finish before freeing its GPU buffers
-        await runtime.release();
+      const bytes = entry.bytes ?? (await download(entry.sample!));
+      if (entry.runtime) {
+        await loopRef.current!.detach(i); // let the in-flight frame finish before freeing its GPU buffers
+        await entry.runtime.release();
       }
       const rt = await createRuntime(bytes, backend);
       const inferred = inferConfig(bytes, rt.input);
-      const cfg = explicitConfig ?? withOptions(inferred.config, options);
-      setRuntime(rt);
-      setModelName(name);
-      setConfig(cfg);
-      setConfigSource(explicitConfig ? "config file" : inferred.source);
-      setDecoderGuessed(!explicitConfig && inferred.guessed);
-      setUseA(on);
-      loopRef.current!.setModel(0, on ? rt : null, on ? cfg : null);
-      setModelPipeline(0, await embeddedPipeline(bytes, name, 0));
+      const cfg = entry.explicitConfig ?? withOptions(inferred.config, entry.sample?.options);
+      patchModel(i, {
+        bytes,
+        runtime: rt,
+        config: cfg,
+        configSource: entry.explicitConfig ? "config file" : inferred.source,
+        decoderGuessed: !entry.explicitConfig && inferred.guessed,
+        on,
+      });
+      loopRef.current!.setModel(i, on ? rt : null, on ? cfg : null);
+      setModelPipeline(i, await embeddedPipeline(i, bytes));
     } catch (e) {
-      setRuntime(null);
-      setModelName("");
-      loopRef.current!.setModel(0, null, null);
-      setError(errorMessage(e));
+      patchModel(i, { runtime: undefined, on: false });
+      loopRef.current!.setModel(i, null, null);
+      setError(`${entry.name}: ${errorMessage(e)}`);
     } finally {
-      setLoading(false);
+      patchModel(i, { loading: false });
     }
   }
 
-  async function loadModelB(bytes: Uint8Array, name: string, backend: BackendPreference, on: boolean, options?: Record<string, unknown>) {
-    setLoading(true);
+  /** Switches a model on or off; one that isn't loaded yet is loaded (and downloaded) first. Unticking keeps it loaded. */
+  async function toggleModel(i: number, on: boolean) {
     setError("");
-    try {
-      await unloadModelB();
-      const rt = await createRuntime(bytes, backend);
-      const inferred = inferConfig(bytes, rt.input);
-      const cfg = withOptions(inferred.config, options);
-      setModelB({ runtime: rt, name, config: cfg, configSource: inferred.source, decoderGuessed: inferred.guessed });
-      setUseB(on);
-      loopRef.current!.setModel(1, on ? rt : null, on ? cfg : null);
-      setModelPipeline(1, await embeddedPipeline(bytes, name, 1));
-    } catch (e) {
-      setError(`Model B: ${errorMessage(e)}`);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function unloadModelB() {
-    if (!modelB) return;
-    setModelB(null);
-    await loopRef.current!.detach(1);
-    await modelB.runtime.release();
-  }
-
-  async function preload(list: Sample[]) {
-    const byFile = (f: string) => list.find((s) => s.url.split("/").pop() === f);
-    const first = byFile(PRELOAD[0]);
-    const second = byFile(PRELOAD[1]);
-    if (first) await onSample(first, 0);
-    if (second) await onSample(second, 1);
+    const m = modelsRef.current[i];
+    if (on && !m.runtime) return loadModel(i, true);
+    patchModel(i, { on });
+    loopRef.current!.setModel(i, on && m.runtime ? m.runtime : null, on && m.config ? m.config : null);
   }
 
   /** Switches backend and reloads the loaded models on it, keeping each one on or off as it was. */
   async function changeBackend(backend: BackendPreference) {
     setBackendPref(backend);
-    const [a, b] = loadedBytes.current;
-    if (a) await loadModel(a.bytes, a.name, 0, backend, useA, a.options, a.trusted);
-    if (b) await loadModel(b.bytes, b.name, 1, backend, useB, b.options, b.trusted);
+    for (const [i, m] of modelsRef.current.entries()) if (m.runtime) await loadModel(i, m.on, backend);
   }
 
-  /** Turns a loaded model on or off without unloading it. */
-  function toggleModel(slot: number, on: boolean) {
-    setError("");
-    if (slot === 0) {
-      setUseA(on);
-      loopRef.current!.setModel(0, on ? runtime : null, on ? config : null);
-    } else {
-      setUseB(on);
-      loopRef.current!.setModel(1, on && modelB ? modelB.runtime : null, on && modelB ? modelB.config : null);
-    }
+  /** Adds a model file picked from disk to the list and turns it on. */
+  async function addModelFile(file: File) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const i = modelsRef.current.length;
+    updateModels((ms) => [...ms, { key: `file:${i}:${file.name}`, name: file.name, bytes, configSource: "", decoderGuessed: false, on: false, loading: false, trusted: false }]);
+    await loadModel(i, true);
   }
 
-  async function onModelFile(file: File, slot = 0) {
-    await loadModel(new Uint8Array(await file.arrayBuffer()), file.name, slot);
-  }
-
-  async function onSample(sample: Sample, slot = 0) {
-    setLoading(true);
-    try {
-      const url = new URL(sample.url, new URL(MODELS_INDEX, location.href)).href;
-      const res = await fetch(url);
-      // The dev server answers a missing file with the app's HTML page, not a 404.
-      if (!res.ok || res.headers.get("content-type")?.includes("text/html")) {
-        throw new Error(`Could not download ${sample.name} from ${url} (HTTP ${res.status})`);
-      }
-      // The models listed in index.json come from the app's own deployment, so their embedded pipelines are trusted like the app's code.
-      await loadModel(new Uint8Array(await res.arrayBuffer()), sample.name, slot, backendPref, true, sample.options, true);
-    } catch (e) {
-      setError(errorMessage(e));
-      setLoading(false);
-    }
-  }
-
-  async function onConfigFile(file: File) {
+  async function onConfigFile(i: number, file: File) {
     try {
       const cfg = await loadConfigFile(file);
-      setExplicitConfig(cfg);
-      setConfig(cfg);
-      setConfigSource(`config file (${file.name})`);
-      setDecoderGuessed(false);
+      patchModel(i, { explicitConfig: cfg, config: cfg, configSource: `config file (${file.name})`, decoderGuessed: false });
+      loopRef.current!.setConfig(i, cfg);
       setError("");
     } catch (e) {
       setError(errorMessage(e));
@@ -434,6 +369,23 @@ export function App() {
     }
   }
 
+  const active = models.filter((m) => m.on && m.runtime);
+  // A decode error already gives the same advice, with the actual reason.
+  const showGuessWarnings = !(error && error === decodeErrorText);
+  const warnings = active.flatMap((m) => {
+    const prefix = active.length > 1 ? `${m.name}: ` : "";
+    const out: string[] = [];
+    if (m.decoderGuessed && !pipeline?.decode && showGuessWarnings) {
+      out.push(
+        `${prefix}We don't know how to read this model's output, so we're trying "${m.config!.decoder}". ` +
+          "If the results look wrong, pick another decoder in step 2, or load a Config .json or a Pipeline .js with its own decode.",
+      );
+    }
+    const shape = checkInputShape(m.config!, m.runtime!.input);
+    if (shape) out.push(prefix + shape);
+    return out;
+  });
+
   return (
     <div className="app">
       <aside>
@@ -451,67 +403,40 @@ export function App() {
               <option value="wasm">WASM (CPU)</option>
             </select>
           </label>
-          <p className="hint">Both models run on the same frames; untick one to run only the other.</p>
-          {[0, 1].map((slot) => {
-            const rt = slot === 0 ? runtime : modelB?.runtime;
-            const name = slot === 0 ? modelName : modelB?.name;
-            const on = slot === 0 ? useA : useB;
-            return (
-              <div key={slot}>
-                {rt ? (
-                  <label className="check">
-                    <input type="checkbox" checked={on} disabled={loading} onChange={(e) => toggleModel(slot, e.target.checked)} />{" "}
-                    <span>
-                      {modelKey(slot)}: <b>{name}</b> on <b className={rt.backend}>{rt.backend}</b>
-                      {modelPipelines[slot] && <> · pipeline <b>{modelPipelines[slot]!.name}</b></>}
-                    </span>
-                  </label>
-                ) : (
-                  <p className="hint">
-                    {modelKey(slot)}: {loading ? "loading…" : "none"}
-                  </p>
-                )}
-                <details>
-                  <summary>Change model {modelKey(slot)}</summary>
-                  <FileButton label={loading ? "Loading…" : "Load .onnx"} accept=".onnx" onFile={(f) => onModelFile(f, slot)} disabled={loading} small />
-                  {samples.length > 0 && (
-                    <div className="samples">
-                      {samples.map((s) => (
-                        <button key={s.url} disabled={loading} onClick={() => onSample(s, slot)}>
-                          {s.name}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </details>
-              </div>
-            );
-          })}
+          <p className="hint">Tick the models to run; they all run on the same frames. A model downloads the first time it is ticked.</p>
+          {models.map((m, i) => (
+            <label className="check" key={m.key}>
+              <input type="checkbox" checked={m.on} disabled={loading} onChange={(e) => void toggleModel(i, e.target.checked)} />
+              <span>
+                <b>{m.name}</b>
+                {m.loading ? " · loading…" : m.runtime && <> on <b className={m.runtime.backend}>{m.runtime.backend}</b></>}
+                {modelPipelines[i] && <> · pipeline <b>{modelPipelines[i]!.name}</b></>}
+              </span>
+            </label>
+          ))}
+          <FileButton label="Load .onnx" accept=".onnx" onFile={addModelFile} disabled={loading} small />
         </section>
 
         <section>
           <h2>2. Config</h2>
-          <FileButton label="Config .json" accept=".json,application/json" onFile={onConfigFile} small />
-          {runtime && (
-            <p className="hint">
-              {modelB && "Model A: "}Config from {configSource}
-            </p>
+          {models.map(
+            (m, i) =>
+              m.runtime &&
+              m.config && (
+                <div key={m.key}>
+                  {models.filter((x) => x.runtime).length > 1 && <h3>{m.name}</h3>}
+                  <p className="hint">Config from {m.configSource}</p>
+                  <FileButton label="Config .json" accept=".json,application/json" onFile={(f) => void onConfigFile(i, f)} small />
+                  {m.explicitConfig && (
+                    <button className="link" onClick={() => patchModel(i, { explicitConfig: undefined })}>
+                      Forget config file (auto-detect on next model load)
+                    </button>
+                  )}
+                  <ConfigEditor config={m.config} decoderFromPipeline={pipeline?.decode ? pipeline.name : undefined} onChange={(c) => editConfig(i, c)} />
+                </div>
+              ),
           )}
-          {explicitConfig && (
-            <button className="link" onClick={() => setExplicitConfig(null)}>
-              Forget config file (auto-detect on next model load)
-            </button>
-          )}
-          {config && (
-            <ConfigEditor config={config} decoderFromPipeline={pipeline?.decode ? pipeline.name : undefined} onChange={editConfig} />
-          )}
-          {modelB && (
-            <>
-              <h3>Model B</h3>
-              <p className="hint">Config from {modelB.configSource}</p>
-              <ConfigEditor config={modelB.config} onChange={editConfigB} />
-            </>
-          )}
+          {!models.some((m) => m.runtime) && <p className="hint">Tick a model to configure it.</p>}
         </section>
 
         <section>
@@ -561,8 +486,10 @@ export function App() {
             {EXAMPLE_VIDEOS.map((x) => (
               <button key={x.file} title={x.hint} onClick={() => {
                   // Run only the model(s) the clip is made for.
-                  if (runtime && useA !== x.models[0]) toggleModel(0, x.models[0]);
-                  if (modelB && useB !== x.models[1]) toggleModel(1, x.models[1]);
+                  models.forEach((m, i) => {
+                    const want = !!m.sample && x.models.includes(m.sample.url.split("/").pop()!);
+                    if (m.sample && m.on !== want) void toggleModel(i, want);
+                  });
                   void startVideo(`${import.meta.env.BASE_URL}examples/${x.file}`, x.file);
                 }}>
                 {x.label}
@@ -619,13 +546,14 @@ export function App() {
       </aside>
 
       <main>
-        {(error || shapeWarning || decoderWarning || shapeWarningB || decoderWarningB) && (
+        {(error || warnings.length > 0) && (
           <div className="status">
             {error && <div className="err">{error}</div>}
-            {decoderWarning && <div className="warn">{decoderWarning}</div>}
-            {shapeWarning && <div className="warn">{modelB && "Model A: "}{shapeWarning}</div>}
-            {decoderWarningB && <div className="warn">{decoderWarningB}</div>}
-            {shapeWarningB && <div className="warn">Model B: {shapeWarningB}</div>}
+            {warnings.map((w) => (
+              <div key={w} className="warn">
+                {w}
+              </div>
+            ))}
           </div>
         )}
         <div className="stage" style={{ aspectRatio: aspect }}>
@@ -656,20 +584,20 @@ export function App() {
           />
           {!source && <div className="placeholder">Load a model, then pick a camera or video file.</div>}
         </div>
-        {stats && runtime && (
+        {stats && active.length > 0 && (
           <div className="stats">
             <span>{stats.fps} fps</span>
             <span>pre {stats.preMs.toFixed(1)} ms</span>
             <span>
               infer{" "}
               {stats.inferByModel.length > 1
-                ? stats.inferByModel.map((ms, i) => `${modelKey(i)} ${ms.toFixed(1)}`).join(" · ")
+                ? stats.inferByModel.map((ms, i) => `${active[i]?.name ?? modelKey(i)} ${ms.toFixed(1)}`).join(" · ")
                 : stats.inferMs.toFixed(1)}{" "}
               ms
             </span>
             <span>post {stats.postMs.toFixed(1)} ms</span>
             <span>{stats.detections} results</span>
-            <span>{runtime.backend}</span>
+            <span>{active[0].runtime!.backend}</span>
             {Object.entries(stats.metrics ?? {}).map(([k, v]) => (
               <span key={k} className="metric">
                 {k}: <b>{v}</b>
