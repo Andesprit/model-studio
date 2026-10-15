@@ -28,9 +28,9 @@ const PRELOAD = ["vortex_detector_fp32_with_pipeline.onnx", "particle_detector_w
 
 /** Short clips in public/examples, for trying the models without a video of your own. */
 const EXAMPLE_VIDEOS = [
-  { label: "Vortex", file: "vortex.mp4", hint: "A vortex wall: model A" },
-  { label: "Particles", file: "particles.mp4", hint: "Particles in a pump: model B" },
-  { label: "Both", file: "both.mp4", hint: "A turbine with a vortex rope and flakes: both models" },
+  { label: "Vortex", file: "vortex.mp4", models: [true, false], hint: "A vortex wall: model A" },
+  { label: "Particles", file: "particles.mp4", models: [false, true], hint: "Particles in a pump: model B" },
+  { label: "Both", file: "both.mp4", models: [true, true], hint: "A turbine with a vortex rope and flakes: both models" },
 ];
 
 interface SecondModel {
@@ -559,7 +559,12 @@ export function App() {
           <p className="hint">Or try an example:</p>
           <div className="samples">
             {EXAMPLE_VIDEOS.map((x) => (
-              <button key={x.file} title={x.hint} onClick={() => void startVideo(`${import.meta.env.BASE_URL}examples/${x.file}`, x.file)}>
+              <button key={x.file} title={x.hint} onClick={() => {
+                  // Run only the model(s) the clip is made for.
+                  if (runtime && useA !== x.models[0]) toggleModel(0, x.models[0]);
+                  if (modelB && useB !== x.models[1]) toggleModel(1, x.models[1]);
+                  void startVideo(`${import.meta.env.BASE_URL}examples/${x.file}`, x.file);
+                }}>
                 {x.label}
               </button>
             ))}
