@@ -41,7 +41,8 @@ and open http://localhost:5173. Both models load on their own, each with its ana
 3. **Pipeline**: optional. The models already bring their own; load a `.js` here only to run another
    analysis on top of both.
 4. **Source**: **Video file** or **Camera**. Videos must be H.264 MP4 (see
-   [findings](docs/findings.md#video-formats)).
+   [findings](docs/findings.md#video-formats)). Test videos are in `videos/`: `type-*` for the vortex model,
+   `bomba*` and `turbina*` (full frame, or one tube per `_tube_N` file) for the particle model.
 5. **Calibrate**: click **Calibrate**, drag a line over something of known length in the video, then enter
    its length and unit. Sizes and speeds are then in that unit instead of pixels. The line can be moved,
    resized or removed.
@@ -82,6 +83,7 @@ pipelines/             the analysis built into each model (vortex, particles): t
 examples/              other pipelines and a config, for other kinds of models
 scripts/               embed_pipeline.py
 docs/                  how it works, findings, history
+videos/                test videos (H.264): vortex (type-*) and particles (bomba*, turbina*)
 ```
 
 ## Docs

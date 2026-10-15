@@ -2,7 +2,6 @@ node_modules
 dist
 /models/
 apps/web/public/models/*.onnx
-/videos/
 # The two models the app ships with (the rest stay out of git)
 !apps/web/public/models/vortex_detector_fp32_with_pipeline.onnx
 !apps/web/public/models/particle_detector_with_pipeline.onnx
