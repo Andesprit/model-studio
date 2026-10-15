@@ -1,4 +1,4 @@
-import { decode, toTensor, type ModelConfig, type PipelineRunner, type Result } from "@detect/core";
+import { decodeAll, mergeResults, toTensor, type ModelConfig, type ModelInput, type PipelineRunner, type Result } from "@detect/core";
 import { FrameGrabber } from "./frameGrabber";
 import { Renderer } from "./renderer";
 import type { ModelRuntime } from "./runtime";
@@ -6,7 +6,10 @@ import type { ModelRuntime } from "./runtime";
 export interface Stats {
   fps: number;
   preMs: number;
+  /** Total inference time of all models. */
   inferMs: number;
+  /** Inference time per loaded model, in slot order (A, B…). */
+  inferByModel: number[];
   postMs: number;
   detections: number;
   /** Values published by the pipeline. */
@@ -23,17 +26,26 @@ type VideoWithRVFC = HTMLVideoElement & {
   cancelVideoFrameCallback?: (id: number) => void;
 };
 
+/** A loaded model. Replaced (never mutated) on change, so an in-flight frame can tell it went stale. */
+interface Slot {
+  runtime: ModelRuntime;
+  config: ModelConfig;
+  grabber: FrameGrabber;
+}
+
 /**
  * Runs model inference on a video element and draws results on an overlay canvas.
- * At most one inference is in flight; frames that arrive meanwhile are dropped, so latency stays bounded.
+ * Up to two models (slots A and B) run on the same frame, one after the other, and their results are drawn together.
+ * At most one frame is in flight; frames that arrive meanwhile are dropped, so latency stays bounded.
  */
 export class FrameLoop {
-  private grabber = new FrameGrabber();
   private renderer: Renderer;
-  private runtime: ModelRuntime | null = null;
-  private config: ModelConfig | null = null;
-  /** User pipeline; null means decode with the config's decoder and draw as-is. */
+  private slots: (Slot | null)[] = [null, null];
+  /** Pipeline loaded by the user (step 3); runs on every model's results together. */
   private pipeline: PipelineRunner | null = null;
+  /** Each slot's own pipeline (e.g. embedded in its model); runs on that model's output only. Kept apart from
+   * the slot so turning a model off and on keeps its pipeline. */
+  private modelPipelines: (PipelineRunner | null)[] = [null, null];
   private busy = false;
   private inflight: Promise<void> = Promise.resolve();
   /** Set after an error; cleared when the model or config changes. */
@@ -52,24 +64,27 @@ export class FrameLoop {
     this.renderer = new Renderer(overlay);
   }
 
-  setModel(runtime: ModelRuntime | null, config: ModelConfig | null) {
-    this.runtime = runtime;
-    this.config = config;
-    this.pipeline?.reset();
+  /** Puts a model in slot 0 (A) or 1 (B), or empties the slot with null. */
+  setModel(slot: number, runtime: ModelRuntime | null, config: ModelConfig | null) {
+    const prev = this.slots[slot];
+    this.slots[slot] = runtime && config ? { runtime, config, grabber: prev?.grabber ?? new FrameGrabber() } : null;
+    this.resetPipeline();
     this.halted = false;
     this.renderer.clear();
     this.refresh();
   }
 
-  /** Stops using the current model and resolves once no inference is running on it, so it can be released. */
-  detach(): Promise<void> {
-    this.setModel(null, null);
+  /** Stops using a slot's model and resolves once no inference is running on it, so it can be released. */
+  detach(slot: number): Promise<void> {
+    this.setModel(slot, null, null);
     return this.inflight;
   }
 
-  /** Swap config (thresholds etc.) without reloading the model; re-runs on the current frame if paused. */
-  setConfig(config: ModelConfig) {
-    this.config = config;
+  /** Swap a slot's config without reloading its model; re-runs on the current frame if paused. */
+  setConfig(slot: number, config: ModelConfig) {
+    const s = this.slots[slot];
+    if (!s) return;
+    this.slots[slot] = { ...s, config };
     this.halted = false;
     this.refresh();
   }
@@ -81,9 +96,17 @@ export class FrameLoop {
     this.refresh();
   }
 
-  /** Clears pipeline state, e.g. when the source changes. */
+  /** Sets (or clears with null) the pipeline that runs on one slot's model only. */
+  setModelPipeline(slot: number, pipeline: PipelineRunner | null) {
+    this.modelPipelines[slot] = pipeline;
+    this.halted = false;
+    this.refresh();
+  }
+
+  /** Clears every pipeline's state, e.g. when the source changes. */
   resetPipeline() {
     this.pipeline?.reset();
+    for (const p of this.modelPipelines) p?.reset();
   }
 
   start() {
@@ -107,7 +130,7 @@ export class FrameLoop {
   private schedule() {
     if (!this.running) return;
     const next = () => {
-      if (this.busy) this.pipeline?.markDropped();
+      if (this.busy) for (const p of [this.pipeline, ...this.modelPipelines]) p?.markDropped();
       void this.run();
       this.schedule();
     };
@@ -117,31 +140,61 @@ export class FrameLoop {
   }
 
   private run() {
-    if (this.busy || this.halted || !this.runtime || !this.config || this.video.readyState < 2) return;
-    this.inflight = this.tick(this.runtime, this.config, this.pipeline);
+    if (this.busy || this.halted || !this.slots.some(Boolean) || this.video.readyState < 2) return;
+    this.inflight = this.tick([...this.slots], this.pipeline, [...this.modelPipelines]);
   }
 
-  private async tick(runtime: ModelRuntime, config: ModelConfig, pipeline: PipelineRunner | null) {
+  /** True while the slots and pipelines a frame started with are still the current ones. */
+  private current(slots: (Slot | null)[], pipeline: PipelineRunner | null, modelPipelines: (PipelineRunner | null)[]) {
+    return (
+      pipeline === this.pipeline &&
+      slots.every((s, i) => s === this.slots[i]) &&
+      modelPipelines.every((p, i) => p === this.modelPipelines[i])
+    );
+  }
+
+  private async tick(slots: (Slot | null)[], pipeline: PipelineRunner | null, modelPipelines: (PipelineRunner | null)[]) {
     this.busy = true;
     try {
+      const timestamp = this.video.currentTime;
+      const slotIndex = slots.flatMap((s, i) => (s ? [i] : []));
+      const loaded = slotIndex.map((i) => slots[i]!);
+      // Grab every model's input before running any of them, so all see the same video frame
+      // (the video keeps playing while the first model runs). Each uses its own input config.
       const t0 = performance.now();
-      const { frame, transform } = this.grabber.grab(this.video, config.input);
-      const tensor = toTensor(frame, config.input);
-      const t1 = performance.now();
-      const outputs = await runtime.run(tensor);
+      const prepared = loaded.map(({ config, grabber }) => {
+        const { frame, transform } = grabber.grab(this.video, config.input);
+        return { tensor: toTensor(frame, config.input), transform };
+      });
+      const preMs = performance.now() - t0;
+      const inputs: ModelInput[] = [];
+      const inferByModel: number[] = [];
+      for (const [i, { runtime, config }] of loaded.entries()) {
+        const t1 = performance.now();
+        const outputs = await runtime.run(prepared[i].tensor);
+        inferByModel.push(performance.now() - t1);
+        inputs.push({ outputs, config, transform: prepared[i].transform });
+      }
+      // A model, config or pipeline swapped mid-frame: drop the stale result (and keep it out of the pipeline's state).
+      if (!this.current(slots, pipeline, modelPipelines)) return;
       const t2 = performance.now();
-      if (runtime !== this.runtime) return; // model swapped mid-frame; drop the stale result
-      if (pipeline !== this.pipeline) return; // pipeline swapped mid-frame; its state must not see this frame
-      const result = pipeline
-        ? pipeline.run(outputs, config, transform, this.video.currentTime)
-        : decode(outputs, config, transform);
-      this.renderer.draw(result, transform.frameWidth, transform.frameHeight);
+      const own = slotIndex.map((i) => modelPipelines[i]);
+      let result: Result;
+      if (own.some(Boolean)) {
+        // Each model through its own pipeline (or just its decoder), then the user's pipeline on top, if any.
+        const perModel = inputs.map((input, k) => own[k]?.run([input], timestamp) ?? decodeAll([input]));
+        result = pipeline ? pipeline.runDecoded(perModel, inputs, timestamp) : mergeResults(perModel);
+      } else {
+        result = pipeline ? pipeline.run(inputs, timestamp) : decodeAll(inputs);
+      }
+      const { frameWidth, frameHeight } = inputs[0].transform;
+      this.renderer.draw(result, frameWidth, frameHeight);
       const t3 = performance.now();
-      this.report(t0, t1, t2, t3, result);
+      this.report(preMs, inferByModel, t3 - t2, t3, result);
     } catch (e) {
       // A failing decoder would fail on every frame; halt and surface it once.
       // Ignore failures from a model or config that was replaced while this frame was in flight.
-      if (runtime === this.runtime && config === this.config && pipeline === this.pipeline) {
+      if (this.current(slots, pipeline, modelPipelines)) {
         this.halted = true;
         this.video.pause();
         this.cb.onError(e);
@@ -155,14 +208,15 @@ export class FrameLoop {
     }
   }
 
-  private report(t0: number, t1: number, t2: number, t3: number, r: Result) {
-    this.frameTimes.push(t3);
-    while (this.frameTimes.length && t3 - this.frameTimes[0] > 1000) this.frameTimes.shift();
+  private report(preMs: number, inferByModel: number[], postMs: number, now: number, r: Result) {
+    this.frameTimes.push(now);
+    while (this.frameTimes.length && now - this.frameTimes[0] > 1000) this.frameTimes.shift();
     this.cb.onStats({
       fps: this.frameTimes.length,
-      preMs: t1 - t0,
-      inferMs: t2 - t1,
-      postMs: t3 - t2,
+      preMs,
+      inferMs: inferByModel.reduce((a, b) => a + b, 0),
+      inferByModel,
+      postMs,
       detections: (r.boxes?.length ?? 0) + (r.poses?.length ?? 0) + (r.classes?.length ?? 0),
       metrics: r.metrics,
     });

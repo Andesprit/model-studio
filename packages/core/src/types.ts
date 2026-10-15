@@ -216,8 +216,19 @@ export interface FrameInfo {
   height: number;
 }
 
+/** One model's raw output for a frame, with what's needed to decode it. */
+export interface ModelInput {
+  outputs: Record<string, Tensor>;
+  config: ModelConfig;
+  transform: Transform;
+}
+
 export interface PipelineInstance {
-  step(result: Result, frame: FrameInfo): Result;
+  /**
+   * `result` is every model's output merged (what gets drawn). With more than one model loaded,
+   * `models` has each one separately, keyed "A", "B"… in load order.
+   */
+  step(result: Result, frame: FrameInfo, models: Record<string, Result>): Result;
   /** Optional totals for the results file (per-particle speeds, counts…). Must be JSON-serializable. */
   summary?(): Record<string, unknown>;
 }
@@ -240,13 +251,17 @@ export interface RunSummary {
   framesDropped: number;
   /** Every numeric metric the pipeline published, summarized over the analyzed frames. */
   metrics: Record<string, MetricStats>;
+  /** What each metric that appeared means, from the pipeline's `describe`. */
+  definitions: Record<string, string>;
+  /** Every metric of every analyzed frame, in order: { t (s of video), ...metrics }. Capped at MAX_LOG frames. */
+  log: Record<string, number | string>[];
   /** Whatever the pipeline's own `summary()` returned. */
   pipelineResults?: Record<string, unknown>;
 }
 
 /**
  * A user pipeline: the default export of a loaded JS module.
- * `decode` replaces the config's decoder; `create` builds a stateful post-processor and is
+ * `decode` replaces the config's decoder (of model A when two are loaded); `create` builds a stateful post-processor and is
  * called again on every reset, so instances never need to clear their own state.
  * A plain decoder plugin ({ name, decode }) is a valid pipeline.
  */
@@ -254,6 +269,11 @@ export interface PipelineDefinition {
   name: string;
   defaults?: Record<string, unknown>;
   ranges?: Record<string, [number, number]>;
+  /**
+   * What each metric means, for the results file. Keys match the start of a metric's name, so
+   * "vortex area" describes "vortex area px²" and "vortex area cm²" alike.
+   */
+  describe?: Record<string, string>;
   decode?(outputs: Record<string, Tensor>, ctx: DecodeContext): Result;
   create?(ctx: PipelineContext): PipelineInstance;
 }

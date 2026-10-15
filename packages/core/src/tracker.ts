@@ -6,6 +6,11 @@ export interface TrackerOptions {
    * the time since the track was last seen, so dropped frames don't break tracks. Default 50.
    */
   maxDistance?: number;
+  /**
+   * Cap on that growth: the allowance never exceeds maxDistance x maxGrowth. Without a cap, a long gap
+   * (the models skipping frames) lets a track jump to any box in the frame and swap ids. Default 4.
+   */
+  maxGrowth?: number;
   /** Updates a track may go unmatched before it ends. Default 5. */
   maxMissed?: number;
   /** Only match boxes of the same class. Default true. */
@@ -35,6 +40,7 @@ const STEP = 1 / 30;
 /** Greedy nearest-center tracker: closest box/track pairs are matched first; ids are never reused. */
 export function createTracker(options: TrackerOptions = {}): Tracker {
   const maxDistance = options.maxDistance ?? 50;
+  const maxGrowth = options.maxGrowth ?? 4;
   const maxMissed = options.maxMissed ?? 5;
   const sameClass = options.sameClass ?? true;
   let tracks: Track[] = [];
@@ -54,7 +60,7 @@ export function createTracker(options: TrackerOptions = {}): Tracker {
 
       const pairs: { t: number; b: number; d: number }[] = [];
       tracks.forEach((tr, t) => {
-        const gate = maxDistance * Math.max(1, (clock - tr.seenAt) / STEP);
+        const gate = maxDistance * Math.min(maxGrowth, Math.max(1, (clock - tr.seenAt) / STEP));
         boxes.forEach((box, b) => {
           if (sameClass && box.classId !== tr.classId) return;
           const d = Math.hypot(centers[b].x - tr.x, centers[b].y - tr.y);

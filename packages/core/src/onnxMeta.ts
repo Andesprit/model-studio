@@ -7,6 +7,9 @@ declare class TextDecoder {
  * Reads ModelProto.metadata_props (field 14) from raw .onnx bytes without a protobuf library.
  * Only top-level fields are scanned; the graph is skipped by length.
  */
+/** ONNX metadata key holding a pipeline's source, written by scripts/embed_pipeline.py. */
+export const PIPELINE_METADATA_KEY = "model-studio.pipeline";
+
 export function readOnnxMetadata(bytes: Uint8Array): Record<string, string> {
   const meta: Record<string, string> = {};
   const r = new Reader(bytes);

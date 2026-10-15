@@ -4,6 +4,7 @@
   "workspaces": ["packages/*", "apps/*"],
   "scripts": {
     "dev": "npm run dev -w apps/web",
+    "dev:phone": "npm run dev:phone -w apps/web",
     "build": "npm run build -w apps/web",
     "test": "npm test -w packages/core",
     "typecheck": "tsc -p packages/core && tsc -p apps/web"

@@ -38,6 +38,14 @@ describe("tracker", () => {
     expect(ids(t.update([box(50)], 0.1))).toEqual([1]);
   });
 
+  it("caps the gate growth, so a long gap can't link far-apart boxes", () => {
+    const t = createTracker({ maxDistance: 20, maxGrowth: 4 });
+    t.update([box(0)], 0);
+    // 1.4 s later the uncapped allowance would be 840 px; the cap keeps it at 80 px.
+    expect(ids(t.update([box(70)], 1.4))).toEqual([1]);
+    expect(ids(t.update([box(300)], 2.8))).toEqual([2]);
+  });
+
   it("gives the closest pair priority", () => {
     const t = createTracker({ maxDistance: 20 });
     t.update([box(0)]);

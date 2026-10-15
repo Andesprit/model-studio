@@ -12,7 +12,12 @@ import type { InputInfo } from "./adapters/runtime";
 
 /** Loads a user pipeline (an ES module whose default export is a PipelineDefinition; old decoder plugins qualify). */
 export async function loadPipeline(file: File): Promise<PipelineDefinition> {
-  const url = URL.createObjectURL(new Blob([await file.text()], { type: "text/javascript" }));
+  return loadPipelineSource(await file.text());
+}
+
+/** Loads a pipeline from its source code, e.g. one embedded in a model's metadata. */
+export async function loadPipelineSource(source: string): Promise<PipelineDefinition> {
+  const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
   try {
     const mod = await import(/* @vite-ignore */ url);
     return definePipeline(mod.default);

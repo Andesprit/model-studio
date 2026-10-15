@@ -1,6 +1,15 @@
 [
-  { "name": "YOLOv8n detect", "file": "yolov8n.onnx" },
-  { "name": "YOLOv8n seg", "file": "yolov8n-seg.onnx" },
-  { "name": "YOLOv8n pose", "file": "yolov8n-pose.onnx" },
-  { "name": "YOLOv8n cls", "file": "yolov8n-cls.onnx" }
+  {
+    "name": "Vortex + pipeline",
+    "file": "vortex_detector_fp32_with_pipeline.onnx"
+  },
+  {
+    "name": "Particles + pipeline",
+    "file": "particle_detector_with_pipeline.onnx",
+    "options": {
+      "scoreThreshold": 0.2,
+      "iouThreshold": 0.35,
+      "maxDetections": 1000
+    }
+  }
 ]

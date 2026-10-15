@@ -58,6 +58,32 @@ export function decode(outputs: Record<string, Tensor>, config: ModelConfig, tra
   return explainDecode(`Decoder "${config.decoder}"`, outputs, () => runDecoder(decoder, outputs, config, transform, config.options));
 }
 
+/** Slot names for loaded models, in load order. */
+export const modelKey = (index: number) => String.fromCharCode(65 + index);
+
+/** Combines several models' results into one, so they can be drawn together. */
+export function mergeResults(results: Result[]): Result {
+  if (results.length === 1) return results[0];
+  const all = <K extends "boxes" | "masks" | "poses" | "classes" | "overlays">(k: K) => {
+    const items = results.flatMap((r) => (r[k] ?? []) as NonNullable<Result[K]>[number][]);
+    return items.length ? (items as NonNullable<Result[K]>) : undefined;
+  };
+  const merged: Result = {
+    boxes: all("boxes"),
+    masks: all("masks"),
+    poses: all("poses"),
+    classes: all("classes"),
+    overlays: all("overlays"),
+    // Only one dense map can be shown; the first model's wins.
+    segmentation: results.find((r) => r.segmentation)?.segmentation,
+    skeleton: results.find((r) => r.skeleton)?.skeleton,
+  };
+  const metrics = Object.assign({}, ...results.map((r) => r.metrics ?? {}));
+  if (Object.keys(metrics).length) merged.metrics = metrics;
+  for (const k of Object.keys(merged) as (keyof Result)[]) if (merged[k] === undefined) delete merged[k];
+  return merged;
+}
+
 /** Runs any decode function (built-in or a pipeline's) with `options` merged over its defaults. */
 export function runDecoder(
   decoder: Pick<Decoder, "defaults" | "decode">,

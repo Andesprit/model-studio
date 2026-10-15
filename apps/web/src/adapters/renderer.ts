@@ -40,8 +40,6 @@ export class Renderer {
       this.paint(ctx, m.width, m.height, m.rect, (i) => (m.data[i] ? color(m.classId) : null), 0.45);
     }
     for (const b of result.boxes ?? []) {
-      // Pose boxes are drawn by the pose section.
-      if (result.poses) break;
       // Tracked boxes are colored by track so each object keeps its color across frames.
       const id = b.trackId ?? b.classId;
       const track = b.trackId !== undefined ? `#${b.trackId} ` : "";

@@ -1,72 +1,92 @@
-# Detect
+# Model Studio
 
-Run any ONNX vision model (detection, instance/semantic segmentation, pose, classification) in the
-browser on a video file or the live camera. Uses WebGPU when available and falls back to WASM.
-Everything runs locally; nothing is uploaded.
+Runs ONNX vision models on a video file or the live camera, in the browser, and measures what they see.
+It's set up for the rig's two models:
 
-## Run
+- **Vortex**: segments the vortex rope ("torch") and measures its area, thickness, movement, waviness and
+  breathing (how much it expands and contracts).
+- **Particles**: detects the particles (flakes), tracks them, and measures how many there are and how fast
+  they move.
+
+Both run at the same time on the same frames. Everything runs on your computer (WebGPU on the GPU, or WASM
+on the CPU); nothing is uploaded. At the end, **Download results** saves everything that was measured as a
+JSON file.
+
+## Quick start
+
+You need [Node.js](https://nodejs.org) 20 or newer and Chrome or Edge.
 
 ```bash
+git clone https://github.com/Andesprit/model-studio.git
+cd model-studio
 npm install
-npm run dev        # http://localhost:5173
-npm test           # core unit tests + real-model checks (if models/ exists)
-npm run build      # static site in apps/web/dist
 ```
 
-Sample models: the buttons under **Model** load whatever is listed in
-`apps/web/public/models/index.json`. To (re)create the YOLOv8n samples:
+The two models come with the repo, in `apps/web/public/models/`:
+`vortex_detector_fp32_with_pipeline.onnx` (0.5 MB) and `particle_detector_with_pipeline.onnx` (39 MB).
+Then:
 
 ```bash
-cd models
-python -c "from ultralytics import YOLO; [YOLO(m).export(format='onnx', opset=17) for m in ['yolov8n.pt','yolov8n-seg.pt','yolov8n-pose.pt','yolov8n-cls.pt']]"
-cp *.onnx ../apps/web/public/models/
+npm run dev
 ```
 
-## How a model gets configured
+and open http://localhost:5173. Both models load on their own, each with its analysis built in.
 
-In order of priority:
+## Using it
 
-1. **Config file** (`Config .json`), which describes preprocessing and which decoder reads the outputs.
-   See `apps/web/public/examples/semantic-seg.example.json`. Any field you leave out gets a default.
-   **detector-app manifests** (`*.manifest.json` with `input` / `postprocess`) are accepted as-is:
-   `binary_mask`, `boxes` (xyxysc) and `classification`.
-2. **Metadata embedded in the `.onnx`**: a detector-app manifest (`detector.manifest`, written by
-   `embed_manifest.py`) or Ultralytics metadata (task, class names, image size). These models work
-   with zero setup.
-3. **The model's input shape**, after which you pick the decoder yourself.
+1. **Model**: the vortex model (A) and the particle model (B) are already loaded. Untick one to run only the
+   other; each frame takes about the sum of both models' times, so one model alone is faster.
+2. **Config**: how each model reads its input and output. Filled in from the model itself; you normally don't
+   touch it.
+3. **Pipeline**: optional. The models already bring their own; load a `.js` here only to run another
+   analysis on top of both.
+4. **Source**: **Video file** or **Camera**. Videos must be H.264 MP4 (see
+   [findings](docs/findings.md#video-formats)).
+5. **Calibrate**: click **Calibrate**, drag a line over something of known length in the video, then enter
+   its length and unit. Sizes and speeds are then in that unit instead of pixels. The line can be moved,
+   resized or removed.
+6. **Results → Download results (.json)**: everything measured so far, with one section per model.
 
-Preprocessing covers grayscale or color input, RGB/BGR, NCHW/NHWC, `letterbox` / `stretch` /
-`scale` (fixed factor) / `shortest_edge` resizing, center or top-left alignment, pad value and
-mean/std normalization.
+What each measurement means is in [docs/how-it-works.md](docs/how-it-works.md#what-gets-measured), and it's
+also written into every results file.
 
-The decoder can be switched live in the sidebar.
+### On a phone
 
-| Decoder        | Expects |
-|----------------|---------|
-| `yolo-detect`  | YOLO v5/v8/v9/v11/v12 `[1,4+nc,N]` / `[1,N,5+nc]`, NMS-free v10/YOLO26 `[1,N,6]` (`format` option to force) |
-| `yolo-seg`     | as above + prototype masks `[1,32,H,W]` |
-| `yolo-pose`    | as above + keypoints (`kptShape`, default `[17,3]`) |
-| `semantic-seg` | logits `[1,C,H,W]` / `[1,H,W,C]`, class indices `[1,H,W]`, or binary logits `[1,1,H,W]` (`mode`, `threshold`) |
-| `classify`     | `[1,C]` logits or probabilities |
-
-## Pipelines
-
-For anything else, write a pipeline as an ES module and load it with **Pipeline .js**. A pipeline can
-bring its own `decode` (replacing the config's decoder) and/or a `create(ctx)` that returns a stateful
-`step(result, frame)` run after decoding, e.g. for tracking or counting. See
-`apps/web/public/examples/tracking.pipeline.js` for a commented example of both (a hand-written
-YOLOv8 decoder, then tracking and speed using the calibration), and
-`apps/web/public/examples/people-counter.plugin.js` for a decoder-only one. A decoder gets the raw
-output tensors plus helpers (`nms`, `softmax`, coordinate mapping) and returns boxes/masks/keypoints/classes
-in frame pixels.
-
-## Layout
-
-```
-packages/core   platform-free TS: config, preprocessing, decoders, NMS, ONNX metadata reader
-apps/web        React + Vite: onnxruntime-web runtime, video/camera capture, canvas overlay, UI
+```bash
+npm run dev:phone
 ```
 
-`core` has no DOM or Node dependencies, so a future React Native app can reuse it unchanged and only
-add its own adapters (`onnxruntime-react-native`, `react-native-vision-camera`, Skia). Runtime `.js`
-pipelines are web-only. On mobile, pipelines have to be bundled into the app.
+prints a `Network: https://<pc-ip>:5173` address. Open it on a phone on the same Wi-Fi and accept the
+certificate warning once. On some phones the GPU gives wrong results; if every detection looks wrong, set
+**Backend** to **WASM (CPU)** (see [findings](docs/findings.md#phones-the-gpu-can-compute-wrong-results)).
+
+## Commands
+
+```bash
+npm run dev          # the app at http://localhost:5173
+npm run dev:phone    # the same over HTTPS on the local network, for phones
+npm test             # unit tests (packages/core)
+npm run typecheck    # TypeScript, both packages
+npm run build        # static site in apps/web/dist
+python scripts/embed_pipeline.py MODEL.onnx PIPELINE.js   # put a pipeline inside a model
+```
+
+## Project layout
+
+```
+apps/web/              the app (React + Vite): UI, camera/video, onnxruntime-web, drawing
+  public/models/       the models the app loads, and index.json (the list it shows and preloads)
+packages/core/         the logic, no browser code: config, preprocessing, decoders, pipelines, tracker
+  test/                unit tests
+pipelines/             the analysis built into each model (vortex, particles): the source to edit
+examples/              other pipelines and a config, for other kinds of models
+scripts/               embed_pipeline.py
+docs/                  how it works, findings, history
+```
+
+## Docs
+
+- [How it works](docs/how-it-works.md): the flow, models and config, pipelines, the results file.
+- [Writing pipelines](docs/pipelines.md): how to write one and put it inside a model.
+- [Findings](docs/findings.md): what we learned testing it: phones, int8 vs fp32, speed, video formats,
+  deploying.

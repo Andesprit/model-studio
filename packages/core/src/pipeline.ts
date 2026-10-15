@@ -1,5 +1,5 @@
-import { decode, explainDecode, lib, runDecoder, utils } from "./decoders";
-import type { Calibration, MetricStats, ModelConfig, PipelineDefinition, RunSummary, PipelineInstance, Result, Tensor, Transform } from "./types";
+import { decode, explainDecode, lib, mergeResults, modelKey, runDecoder, utils } from "./decoders";
+import type { Calibration, MetricStats, ModelInput, PipelineDefinition, RunSummary, PipelineInstance, Result } from "./types";
 
 /** Builds a calibration from a measured line, or null if either length is missing or not positive. */
 export function makeCalibration(pixels: number, amount: number, unit: string): Calibration | null {
@@ -25,6 +25,9 @@ export function definePipeline(value: unknown): PipelineDefinition {
  * frame creates a fresh one. Time going backwards (a looped or rewound video) also resets,
  * so the same footage is never counted twice.
  */
+/** Most frames kept in a run's measurement log (about 1.5 hours at 10 analyzed frames per second). */
+export const MAX_LOG = 50_000;
+
 export class PipelineRunner {
   private instance: PipelineInstance | null = null;
   private frames = 0;
@@ -34,6 +37,8 @@ export class PipelineRunner {
   /** Distinct frames seen (re-runs of a paused frame excluded). */
   private analyzed = 0;
   private stats = new Map<string, { sum: number; min: number; max: number; last: number; n: number }>();
+  /** One entry per analyzed frame with all its metrics, so the results file shows what was measured when. */
+  private log: Record<string, number | string>[] = [];
   readonly options: Record<string, unknown>;
 
   constructor(
@@ -52,6 +57,7 @@ export class PipelineRunner {
     this.firstTimestamp = null;
     this.analyzed = 0;
     this.stats.clear();
+    this.log = [];
   }
 
   /** What has been measured since the last reset. Numeric metrics are summarized automatically. */
@@ -59,12 +65,24 @@ export class PipelineRunner {
     const metrics: Record<string, MetricStats> = {};
     for (const [k, s] of this.stats) metrics[k] = { mean: s.sum / s.n, min: s.min, max: s.max, last: s.last, frames: s.n };
     const own = this.instance?.summary ? blame(this.pipeline.name, "summary", () => this.instance!.summary!()) : undefined;
+    const seen = new Set(this.log.flatMap((e) => Object.keys(e)));
+    seen.delete("t");
+    const definitions: Record<string, string> = {};
+    for (const name of seen) {
+      // The longest matching key wins, so "particles mean speed" beats "particles".
+      const key = Object.keys(this.pipeline.describe ?? {})
+        .filter((k) => name.startsWith(k))
+        .sort((a, b) => b.length - a.length)[0];
+      if (key) definitions[name] = this.pipeline.describe![key];
+    }
     return {
       from: this.firstTimestamp,
       to: this.firstTimestamp === null ? null : this.lastTimestamp,
       framesAnalyzed: this.analyzed,
       framesDropped: this.dropped,
       metrics,
+      definitions,
+      log: this.log,
       ...(own && { pipelineResults: own }),
     };
   }
@@ -74,16 +92,31 @@ export class PipelineRunner {
     this.dropped++;
   }
 
-  run(outputs: Record<string, Tensor>, config: ModelConfig, transform: Transform, timestamp: number): Result {
+  /** Processes one frame. `inputs` has one entry per loaded model, model A first. */
+  run(inputs: ModelInput[], timestamp: number): Result {
+    return this.track(timestamp, () => this.process(this.decodeInputs(inputs), inputs, timestamp));
+  }
+
+  /**
+   * Like run, for results that are already decoded (e.g. by each model's own pipeline): skips decoding,
+   * including this pipeline's own decode. `perModel[i]` belongs to `inputs[i]`.
+   */
+  runDecoded(perModel: Result[], inputs: ModelInput[], timestamp: number): Result {
+    return this.track(timestamp, () => this.process(perModel, inputs, timestamp));
+  }
+
+  /** Time bookkeeping around one frame: resets on rewind, and logs/summarizes each distinct frame once. */
+  private track(timestamp: number, processFrame: () => Result): Result {
     if (timestamp < this.lastTimestamp) this.reset();
     // A paused video re-runs the same frame; it must not count twice in the statistics.
     const repeat = timestamp === this.lastTimestamp;
     this.lastTimestamp = timestamp;
     this.firstTimestamp ??= timestamp;
-    const result = this.process(outputs, config, transform, timestamp);
+    const result = processFrame();
     if (!repeat) {
       this.analyzed++;
       this.record(result.metrics);
+      if (result.metrics && this.log.length < MAX_LOG) this.log.push({ t: timestamp, ...result.metrics });
     }
     return result;
   }
@@ -97,13 +130,22 @@ export class PipelineRunner {
     }
   }
 
-  private process(outputs: Record<string, Tensor>, config: ModelConfig, transform: Transform, timestamp: number): Result {
+  private decodeInputs(inputs: ModelInput[]): Result[] {
     const p = this.pipeline;
     const pd = p.decode;
-    const result = pd
-      ? explainDecode(`Pipeline "${p.name}"'s decode`, outputs, () => runDecoder({ decode: pd }, outputs, config, transform, this.options))
-      : decode(outputs, config, transform);
+    // The pipeline's decoder replaces model A's; other models keep their own.
+    return inputs.map(({ outputs, config, transform }, i) =>
+      pd && i === 0
+        ? explainDecode(`Pipeline "${p.name}"'s decode`, outputs, () => runDecoder({ decode: pd }, outputs, config, transform, this.options))
+        : decodeModel(inputs[i], i, inputs.length),
+    );
+  }
+
+  private process(perModel: Result[], inputs: ModelInput[], timestamp: number): Result {
+    const p = this.pipeline;
+    const result = mergeResults(perModel);
     if (!p.create) return result;
+    const { config, transform } = inputs[0];
     if (!this.instance) {
       const instance = blame(p.name, "create", () =>
         p.create!({ config, options: this.options, labels: config.labels ?? [], utils, lib, calibration: this.calibration }),
@@ -115,7 +157,24 @@ export class PipelineRunner {
     }
     const instance = this.instance;
     const frame = { timestamp, index: this.frames++, dropped: this.dropped, width: transform.frameWidth, height: transform.frameHeight };
-    return blame(p.name, "step", () => instance.step(result, frame));
+    const models = Object.fromEntries(perModel.map((r, i) => [modelKey(i), r]));
+    return blame(p.name, "step", () => instance.step(result, frame, models));
+  }
+}
+
+/** Decodes every model's output with its config's decoder and merges them; used when no pipeline is loaded. */
+export function decodeAll(inputs: ModelInput[]): Result {
+  return mergeResults(inputs.map((input, i) => decodeModel(input, i, inputs.length)));
+}
+
+/** Decodes one model; with several models, errors say which one failed. */
+function decodeModel({ outputs, config, transform }: ModelInput, index: number, count: number): Result {
+  if (count === 1) return decode(outputs, config, transform);
+  try {
+    return decode(outputs, config, transform);
+  } catch (e) {
+    if (e instanceof Error) e.message = `Model ${modelKey(index)}: ${e.message}`;
+    throw e;
   }
 }
 
