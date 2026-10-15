@@ -1,5 +1,5 @@
-// Particle pipeline: tracking, speed and count. Embedded in particle_detector_with_pipeline.onnx, so it
-// loads with that model; it can also be loaded by hand with "Pipeline .js" on any model that gives boxes.
+// Particle pipeline: tracking, speed and count. Not embedded in any shipped model: load it with
+// "Pipeline .js" on any model that gives boxes (e.g. the particle detector).
 //
 // Draw a line of known length in step 5 (Calibrate) so sizes and speeds are in real units (else pixels).
 // Times and rates are in seconds of video.

@@ -76,12 +76,13 @@ off dense frames).
 ## Pipelines
 
 A pipeline is a small JavaScript file that turns each frame's detections into measurements. Each rig model
-carries its own **inside the `.onnx`** (metadata key `model-studio.pipeline`), so it loads with the model:
+can carry its own **inside the `.onnx`** (metadata key `model-studio.pipeline`), so it loads with the model:
 
 | Model file | Pipeline inside | Source |
 |---|---|---|
 | `vortex_detector_fp32_with_pipeline.onnx` | `vortex` | `pipelines/vortex.pipeline.js` |
-| `particle_detector_with_pipeline.onnx` | `particles` | `pipelines/particles.pipeline.js` |
+| `particle_detector_with_tracking.onnx` | `tracking` | `pipelines/tracking.pipeline.js` |
+| `particle_detector.onnx` | none (detection only) | `pipelines/particles.pipeline.js` can be loaded on top in step 3 |
 
 Each model's pipeline runs on that model's output only. A model opened from disk asks before running its
 pipeline, since that's code; the app's own models don't ask.

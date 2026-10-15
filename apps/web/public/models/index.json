@@ -4,13 +4,13 @@
     "url": "vortex_detector_fp32_with_pipeline.onnx"
   },
   {
-    "name": "Particles + pipeline",
+    "name": "Particles",
     "options": {
       "scoreThreshold": 0.2,
       "iouThreshold": 0.35,
       "maxDetections": 1000
     },
-    "url": "particle_detector_with_pipeline.onnx"
+    "url": "particle_detector.onnx"
   },
   {
     "name": "Particles + tracking",

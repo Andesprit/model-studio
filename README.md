@@ -22,9 +22,10 @@ cd model-studio
 npm install
 ```
 
-The two models come with the repo, in `apps/web/public/models/`, and the app downloads them by URL
+The models come with the repo, in `apps/web/public/models/`, and the app downloads them by URL
 (listed in `apps/web/public/models/index.json`; a `url` there can be relative or any absolute link):
-`vortex_detector_fp32_with_pipeline.onnx` (0.5 MB) and `particle_detector_with_pipeline.onnx` (39 MB).
+`vortex_detector_fp32_with_pipeline.onnx` (0.5 MB), `particle_detector.onnx` (39 MB, detection only) and
+`particle_detector_with_tracking.onnx` (39 MB, the same detector plus a tracking pipeline).
 Then:
 
 ```bash

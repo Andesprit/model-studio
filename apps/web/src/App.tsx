@@ -25,7 +25,7 @@ const MODELS_INDEX = `${import.meta.env.BASE_URL}models/index.json`;
 
 /** Sample models loaded on startup as model A and model B. */
 const VORTEX = "vortex_detector_fp32_with_pipeline.onnx";
-const PARTICLES = "particle_detector_with_pipeline.onnx";
+const PARTICLES = "particle_detector.onnx";
 const PRELOAD = [VORTEX, PARTICLES];
 
 /** Short clips in public/examples, for trying the models without a video of your own. */
