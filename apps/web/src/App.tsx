@@ -8,7 +8,8 @@ import { ConfigEditor, OptionField, SHOW_OPTIONS } from "./ui/ConfigEditor";
 
 interface Sample {
   name: string;
-  file: string;
+  /** Where to download the model: absolute, or relative to the index.json that lists it. */
+  url: string;
   /** Recommended decoder options for this model (e.g. its best confidence threshold), applied over the detected config. */
   options?: Record<string, unknown>;
 }
@@ -18,6 +19,9 @@ const withOptions = (config: ModelConfig, options?: Record<string, unknown>): Mo
   options ? { ...config, options: { ...config.options, ...options } } : config;
 
 type Source = "camera" | "file" | null;
+
+/** The list of downloadable models; each entry's `url` is resolved against this file's location. */
+const MODELS_INDEX = `${import.meta.env.BASE_URL}models/index.json`;
 
 /** Sample models loaded on startup as model A and model B. */
 const PRELOAD = ["vortex_detector_fp32_with_pipeline.onnx", "particle_detector_with_pipeline.onnx"];
@@ -99,7 +103,7 @@ export function App() {
     });
     loopRef.current = p;
     p.start();
-    fetch("/models/index.json")
+    fetch(MODELS_INDEX)
       .then((r) => (r.ok ? r.json() : []))
       .then((list: Sample[]) => {
         setSamples(list);
@@ -290,7 +294,7 @@ export function App() {
   }
 
   async function preload(list: Sample[]) {
-    const byFile = (f: string) => list.find((s) => s.file === f);
+    const byFile = (f: string) => list.find((s) => s.url.split("/").pop() === f);
     const first = byFile(PRELOAD[0]);
     const second = byFile(PRELOAD[1]);
     if (first) await onSample(first, 0);
@@ -324,12 +328,13 @@ export function App() {
   async function onSample(sample: Sample, slot = 0) {
     setLoading(true);
     try {
-      const res = await fetch(`/models/${sample.file}`);
+      const url = new URL(sample.url, new URL(MODELS_INDEX, location.href)).href;
+      const res = await fetch(url);
       // The dev server answers a missing file with the app's HTML page, not a 404.
       if (!res.ok || res.headers.get("content-type")?.includes("text/html")) {
-        throw new Error(`Sample model ${sample.file} not found in apps/web/public/models (see the README to create it)`);
+        throw new Error(`Could not download ${sample.name} from ${url} (HTTP ${res.status})`);
       }
-      // Sample models are served by the app itself, so their embedded pipelines are trusted like the app's code.
+      // The models listed in index.json come from the app's own deployment, so their embedded pipelines are trusted like the app's code.
       await loadModel(new Uint8Array(await res.arrayBuffer()), sample.name, slot, backendPref, true, sample.options, true);
     } catch (e) {
       setError(errorMessage(e));
@@ -461,7 +466,7 @@ export function App() {
                   {samples.length > 0 && (
                     <div className="samples">
                       {samples.map((s) => (
-                        <button key={s.file} disabled={loading} onClick={() => onSample(s, slot)}>
+                        <button key={s.url} disabled={loading} onClick={() => onSample(s, slot)}>
                           {s.name}
                         </button>
                       ))}

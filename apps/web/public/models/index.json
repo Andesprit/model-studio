@@ -1,15 +1,15 @@
 [
   {
     "name": "Vortex + pipeline",
-    "file": "vortex_detector_fp32_with_pipeline.onnx"
+    "url": "vortex_detector_fp32_with_pipeline.onnx"
   },
   {
     "name": "Particles + pipeline",
-    "file": "particle_detector_with_pipeline.onnx",
     "options": {
       "scoreThreshold": 0.2,
       "iouThreshold": 0.35,
       "maxDetections": 1000
-    }
+    },
+    "url": "particle_detector_with_pipeline.onnx"
   }
 ]

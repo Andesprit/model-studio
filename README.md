@@ -22,7 +22,8 @@ cd model-studio
 npm install
 ```
 
-The two models come with the repo, in `apps/web/public/models/`:
+The two models come with the repo, in `apps/web/public/models/`, and the app downloads them by URL
+(listed in `apps/web/public/models/index.json`; a `url` there can be relative or any absolute link):
 `vortex_detector_fp32_with_pipeline.onnx` (0.5 MB) and `particle_detector_with_pipeline.onnx` (39 MB).
 Then:
 
@@ -92,3 +93,10 @@ videos/                test videos (H.264): vortex (type-*) and particles (bomba
 - [Writing pipelines](docs/pipelines.md): how to write one and put it inside a model.
 - [Findings](docs/findings.md): what we learned testing it: phones, int8 vs fp32, speed, video formats,
   deploying.
+
+## Deploying
+
+Every push to `main` builds the app and publishes it to GitHub Pages (`.github/workflows/pages.yml`);
+the models are served from the same site under `models/`, so their download URLs are
+`https://<owner>.github.io/<repo>/models/<file>.onnx`. Pages can't set the cross-origin-isolation headers,
+so the deployed app runs inference single-threaded; locally (`npm run dev`) it is multi-threaded.

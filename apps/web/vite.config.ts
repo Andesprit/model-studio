@@ -11,6 +11,8 @@ const isolation = {
 // `--mode phone` (npm run dev:phone) serves HTTPS on the local network: phones only allow the camera on
 // secure pages, and localhost isn't the phone. The certificate is self-signed, so the browser warns once.
 export default defineConfig(({ mode }) => ({
+  // Relative asset paths, so the build works under any URL prefix (GitHub Pages serves it at /<repo>/).
+  base: "./",
   plugins: mode === "phone" ? [react(), basicSsl()] : [react()],
   // Keep Vite's cache in the root node_modules instead of creating apps/web/node_modules.
   cacheDir: "../../node_modules/.vite/web",
