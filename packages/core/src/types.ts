@@ -253,8 +253,6 @@ export interface RunSummary {
   metrics: Record<string, MetricStats>;
   /** What each metric that appeared means, from the pipeline's `describe`. */
   definitions: Record<string, string>;
-  /** Every metric of every analyzed frame, in order: { t (s of video), ...metrics }. Capped at MAX_LOG frames. */
-  log: Record<string, number | string>[];
   /** Whatever the pipeline's own `summary()` returned. */
   pipelineResults?: Record<string, unknown>;
 }

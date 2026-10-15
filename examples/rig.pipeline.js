@@ -180,15 +180,6 @@ function vortexAnalyzer({ len, area, unit }) {
               verticalSpeedPerS: round(-(last.centerY - first.centerY) / span, 4),
             }
           : null,
-        series: series.map((s) => ({
-          t: round(s.t, 6),
-          present: round(s.present, 3),
-          area: round(s.area, 3),
-          thickness: round(s.thickness, 3),
-          centerY: round(s.centerY, 3),
-          waviness: round(s.waviness, 3),
-          wavelength: s.wavelength === null ? null : round(s.wavelength, 3),
-        })),
       };
     },
   };

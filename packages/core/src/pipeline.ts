@@ -25,9 +25,6 @@ export function definePipeline(value: unknown): PipelineDefinition {
  * frame creates a fresh one. Time going backwards (a looped or rewound video) also resets,
  * so the same footage is never counted twice.
  */
-/** Most frames kept in a run's measurement log (about 1.5 hours at 10 analyzed frames per second). */
-export const MAX_LOG = 50_000;
-
 export class PipelineRunner {
   private instance: PipelineInstance | null = null;
   private frames = 0;
@@ -37,8 +34,8 @@ export class PipelineRunner {
   /** Distinct frames seen (re-runs of a paused frame excluded). */
   private analyzed = 0;
   private stats = new Map<string, { sum: number; min: number; max: number; last: number; n: number }>();
-  /** One entry per analyzed frame with all its metrics, so the results file shows what was measured when. */
-  private log: Record<string, number | string>[] = [];
+  /** Names of every metric that appeared, so the results file can say what each one means. */
+  private seen = new Set<string>();
   readonly options: Record<string, unknown>;
 
   constructor(
@@ -57,7 +54,7 @@ export class PipelineRunner {
     this.firstTimestamp = null;
     this.analyzed = 0;
     this.stats.clear();
-    this.log = [];
+    this.seen.clear();
   }
 
   /** What has been measured since the last reset. Numeric metrics are summarized automatically. */
@@ -65,10 +62,8 @@ export class PipelineRunner {
     const metrics: Record<string, MetricStats> = {};
     for (const [k, s] of this.stats) metrics[k] = { mean: s.sum / s.n, min: s.min, max: s.max, last: s.last, frames: s.n };
     const own = this.instance?.summary ? blame(this.pipeline.name, "summary", () => this.instance!.summary!()) : undefined;
-    const seen = new Set(this.log.flatMap((e) => Object.keys(e)));
-    seen.delete("t");
     const definitions: Record<string, string> = {};
-    for (const name of seen) {
+    for (const name of this.seen) {
       // The longest matching key wins, so "particles mean speed" beats "particles".
       const key = Object.keys(this.pipeline.describe ?? {})
         .filter((k) => name.startsWith(k))
@@ -82,7 +77,6 @@ export class PipelineRunner {
       framesDropped: this.dropped,
       metrics,
       definitions,
-      log: this.log,
       ...(own && { pipelineResults: own }),
     };
   }
@@ -116,7 +110,7 @@ export class PipelineRunner {
     if (!repeat) {
       this.analyzed++;
       this.record(result.metrics);
-      if (result.metrics && this.log.length < MAX_LOG) this.log.push({ t: timestamp, ...result.metrics });
+      for (const name of Object.keys(result.metrics ?? {})) this.seen.add(name);
     }
     return result;
   }

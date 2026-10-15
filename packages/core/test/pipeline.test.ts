@@ -143,7 +143,7 @@ describe("PipelineRunner", () => {
       },
     });
     const runner = new PipelineRunner(p);
-    expect(runner.summary()).toEqual({ from: null, to: null, framesAnalyzed: 0, framesDropped: 0, metrics: {}, definitions: {}, log: [] });
+    expect(runner.summary()).toEqual({ from: null, to: null, framesAnalyzed: 0, framesDropped: 0, metrics: {}, definitions: {} });
     runner.run([{ outputs, config: config, transform: t }], 1);
     runner.run([{ outputs, config: config, transform: t }], 2);
     runner.run([{ outputs, config: config, transform: t }], 2); // paused re-run: not counted (metric 6 is ignored)
@@ -155,16 +155,10 @@ describe("PipelineRunner", () => {
       framesDropped: 1,
       metrics: { count: { mean: 3, min: 2, max: 4, last: 4, frames: 2 } },
       definitions: {},
-      // Every analyzed frame's metrics, text included; the paused re-run isn't logged twice.
-      log: [
-        { t: 1, count: 2, label: "text is skipped" },
-        { t: 2, count: 4, label: "text is skipped" },
-      ],
       pipelineResults: { calls: 3 },
     });
     runner.run([{ outputs, config: config, transform: t }], 0); // loop: starts over
     expect(runner.summary()).toMatchObject({ from: 0, to: 0, framesAnalyzed: 1, metrics: { count: { frames: 1 } } });
-    expect(runner.summary().log).toHaveLength(1);
   });
 
   it("describes each metric that appeared, matching names by their start", () => {
@@ -222,7 +216,7 @@ describe("PipelineRunner", () => {
     const runner = new PipelineRunner(p);
     const r = runner.runDecoded([{ boxes: [box] }, { boxes: [box, box] }], [{ outputs, config, transform: t }, { outputs, config, transform: t }], 0);
     expect(r.metrics).toEqual({ boxes: 3, models: 2 });
-    expect(runner.summary().log).toEqual([{ t: 0, boxes: 3, models: 2 }]);
+    expect(runner.summary().metrics.boxes).toMatchObject({ mean: 3, frames: 1 });
   });
 
   it("reports a create that returns no step", () => {

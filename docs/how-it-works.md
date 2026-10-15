@@ -5,7 +5,7 @@
 ```
 video / camera ──► grab the frame ──► model A ──► decoder ──► A's pipeline ──┐
                      (once)       └─► model B ──► decoder ──► B's pipeline ──┼─► drawn on the video
-                                                                             └─► metrics + log ─► results file
+                                                                             └─► metrics ─► results file
 ```
 
 For each analyzed frame the app:
@@ -147,13 +147,11 @@ seen, sightings, mean and max speed, net velocity along and across the frame, pa
       framesAnalyzed, framesDropped,
       metrics:     { "vortex thickness px": { mean, min, max, last, frames }, ... },   // every numeric metric summarized
       definitions: { "vortex thickness px": "mean height of the rope across its columns", ... },
-      log:         [ { t: 1.0, "vortex thickness px": 23.77, ... }, ... ],              // every analyzed frame
-      pipelineResults: { ... }      // the pipeline's own summary: time series, breathing, per-particle list...
+      pipelineResults: { ... }      // the pipeline's own summary: breathing, statistics, per-particle list...
     },
     { slot: "B", ... }
   ]
 }
 ```
 
-`log` has one entry per analyzed frame, with its time and every measurement, so the run can be analyzed
-elsewhere (Python, Excel). Only models that were switched on appear.
+Only models that were switched on appear.

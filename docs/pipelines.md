@@ -57,7 +57,7 @@ separately (`models.A`, `models.B`).
 The result to draw, plus optionally:
 
 - `metrics: { name: value }`: shown in the bar under the video. Numbers are also summarized (mean, min, max)
-  and logged per frame in the results file.
+  in the results file.
 - `overlays: [...]`: extra drawings in video pixels: `{ type: "line", from, to }`,
   `{ type: "polyline", points }`, `{ type: "point", at }`, `{ type: "text", at, text }`, each with an
   optional `color`.
