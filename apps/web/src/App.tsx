@@ -49,8 +49,8 @@ const EXAMPLE_VIDEOS: ExampleVideo[] = [
   { label: "Video 7", file: "bomba-2_tube_3.mp4", src: new URL("../../../videos/bomba-2_tube_3.mp4", import.meta.url).href, models: "particles" },
   { label: "Video 8", file: "bomba_tube_3.mp4", src: new URL("../../../videos/bomba_tube_3.mp4", import.meta.url).href, models: "particles" },
   { label: "Video 9", file: "turbina-sin-antorcha_tube_3.mp4", src: new URL("../../../videos/turbina-sin-antorcha_tube_3.mp4", import.meta.url).href, models: "particles" },
-  { label: "Video 10", file: "turbina-antorcha.mp4", src: new URL("../../../videos/turbina-antorcha.mp4", import.meta.url).href, models: "both" },
-  { label: "Video 11", file: "turbina-antorcha-ultima.mp4", src: new URL("../../../videos/turbina-antorcha-ultima.mp4", import.meta.url).href, models: "both" },
+  { label: "Video 10", file: "turbina-antorcha_tube_3.mp4", src: new URL("../../../videos/turbina-antorcha_tube_3.mp4", import.meta.url).href, models: "both" },
+  { label: "Video 11", file: "turbina-antorcha-ultima_tube_3.mp4", src: new URL("../../../videos/turbina-antorcha-ultima_tube_3.mp4", import.meta.url).href, models: "both" },
 ];
 
 /** One entry of the model list: a sample to download or a file the user picked. Loaded the first time it is ticked. */
