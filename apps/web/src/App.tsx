@@ -30,7 +30,7 @@ const PRELOAD = ["vortex_detector_fp32_with_pipeline.onnx", "particle_detector_w
 const EXAMPLE_VIDEOS = [
   { label: "Vortex", file: "vortex.mp4", models: [true, false], hint: "A vortex wall: model A" },
   { label: "Particles", file: "particles.mp4", models: [false, true], hint: "Particles in a pump: model B" },
-  { label: "Both", file: "both.mp4", models: [true, true], hint: "A turbine with a vortex rope and flakes: both models" },
+  { label: "Both", file: "both.mp4", models: [true, true], hint: "A turbine tube with a vortex rope and flakes: both models" },
 ];
 
 interface SecondModel {
