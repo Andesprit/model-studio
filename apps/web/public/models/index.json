@@ -11,5 +11,14 @@
       "maxDetections": 1000
     },
     "url": "particle_detector_with_pipeline.onnx"
+  },
+  {
+    "name": "Particles + tracking",
+    "url": "particle_detector_with_tracking.onnx",
+    "options": {
+      "scoreThreshold": 0.2,
+      "iouThreshold": 0.35,
+      "maxDetections": 1000
+    }
   }
 ]

@@ -71,6 +71,7 @@ npm test             # unit tests (packages/core)
 npm run typecheck    # TypeScript, both packages
 npm run build        # static site in apps/web/dist
 python scripts/embed_pipeline.py MODEL.onnx PIPELINE.js   # put a pipeline inside a model
+                                                          # (particle_detector_with_tracking.onnx = particle model + pipelines/tracking.pipeline.js)
 ```
 
 ## Project layout
