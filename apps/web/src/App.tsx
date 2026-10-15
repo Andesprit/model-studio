@@ -26,6 +26,13 @@ const MODELS_INDEX = `${import.meta.env.BASE_URL}models/index.json`;
 /** Sample models loaded on startup as model A and model B. */
 const PRELOAD = ["vortex_detector_fp32_with_pipeline.onnx", "particle_detector_with_pipeline.onnx"];
 
+/** Short clips in public/examples, for trying the models without a video of your own. */
+const EXAMPLE_VIDEOS = [
+  { label: "Vortex", file: "vortex.mp4", hint: "A vortex wall: model A" },
+  { label: "Particles", file: "particles.mp4", hint: "Particles in a pump: model B" },
+  { label: "Both", file: "both.mp4", hint: "A turbine with a vortex rope and flakes: both models" },
+];
+
 interface SecondModel {
   runtime: ModelRuntime;
   name: string;
@@ -404,13 +411,15 @@ export function App() {
     }
   }
 
-  async function startVideoFile(file: File) {
+  const startVideoFile = (file: File) => startVideo(URL.createObjectURL(file), file.name);
+
+  async function startVideo(src: string, name: string) {
     stopSource();
     setError("");
     const v = videoRef.current!;
-    v.src = URL.createObjectURL(file);
+    v.src = src;
     setSource("file");
-    setSourceName(file.name);
+    setSourceName(name);
     try {
       await v.play();
     } catch (e) {
@@ -418,8 +427,8 @@ export function App() {
       const unsupported = e instanceof DOMException && e.name === "NotSupportedError";
       setError(
         unsupported
-          ? `Could not play ${file.name}: the browser doesn't support this video's format. Convert it to H.264 MP4, ` +
-              `e.g. ffmpeg -i "${file.name}" -c:v libx264 -crf 16 -pix_fmt yuv420p out.mp4`
+          ? `Could not play ${name}: the browser doesn't support this video's format. Convert it to H.264 MP4, ` +
+              `e.g. ffmpeg -i "${name}" -c:v libx264 -crf 16 -pix_fmt yuv420p out.mp4`
           : `Could not play video: ${errorMessage(e)}`,
       );
     }
@@ -452,8 +461,10 @@ export function App() {
                 {rt ? (
                   <label className="check">
                     <input type="checkbox" checked={on} disabled={loading} onChange={(e) => toggleModel(slot, e.target.checked)} />{" "}
-                    {modelKey(slot)}: <b>{name}</b> on <b className={rt.backend}>{rt.backend}</b>
-                    {modelPipelines[slot] && <> · pipeline <b>{modelPipelines[slot]!.name}</b></>}
+                    <span>
+                      {modelKey(slot)}: <b>{name}</b> on <b className={rt.backend}>{rt.backend}</b>
+                      {modelPipelines[slot] && <> · pipeline <b>{modelPipelines[slot]!.name}</b></>}
+                    </span>
                   </label>
                 ) : (
                   <p className="hint">
@@ -544,6 +555,14 @@ export function App() {
               Camera
             </button>
             <FileButton label="Video file" accept="video/*" onFile={startVideoFile} active={source === "file"} />
+          </div>
+          <p className="hint">Or try an example:</p>
+          <div className="samples">
+            {EXAMPLE_VIDEOS.map((x) => (
+              <button key={x.file} title={x.hint} onClick={() => void startVideo(`${import.meta.env.BASE_URL}examples/${x.file}`, x.file)}>
+                {x.label}
+              </button>
+            ))}
           </div>
         </section>
 
