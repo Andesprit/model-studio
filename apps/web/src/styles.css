@@ -1,0 +1,72 @@
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --line: #262b36;
+  --text: #e6e8ee;
+  --muted: #8a93a6;
+  --accent: #4f8cff;
+  --err: #ff6b6b;
+  --warn: #f5b942;
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); }
+.app { display: grid; grid-template-columns: 300px 1fr; min-height: 100vh; }
+aside { background: var(--panel); border-right: 1px solid var(--line); padding: 16px; overflow-y: auto; max-height: 100vh; }
+h1 { font-size: 18px; margin: 0 0 12px; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+h3 { font-size: 13px; margin: 12px 0 6px; }
+section { padding: 12px 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.row { display: flex; gap: 8px; align-items: end; }
+.row > * { flex: 1; }
+button, .button {
+  display: inline-flex; justify-content: center; align-items: center;
+  background: #222734; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+  padding: 8px 10px; font: inherit; cursor: pointer;
+}
+button:hover, .button:hover { border-color: var(--accent); }
+button.active, .button.active { background: var(--accent); border-color: var(--accent); }
+button:disabled, .button.disabled { opacity: .5; cursor: default; }
+.small { padding: 5px 8px; font-size: 12px; }
+button.link { background: none; border: none; color: var(--accent); padding: 0; font-size: 12px; text-align: left; justify-content: start; }
+.samples { display: flex; flex-wrap: wrap; gap: 6px; }
+.samples button { padding: 4px 8px; font-size: 12px; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.field b { color: var(--text); }
+.check { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+input, select { background: #10131a; color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 6px; font: inherit; width: 100%; }
+input[type="checkbox"] { width: auto; }
+input[type="range"] { padding: 0; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+details[open] { display: flex; flex-direction: column; gap: 8px; }
+.hint { color: var(--muted); font-size: 12px; margin: 0; line-height: 1.5; }
+.hint b { color: var(--text); }
+.webgpu { color: #7ee787 !important; }
+.wasm { color: var(--warn) !important; }
+main { padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.stage { position: relative; width: 100%; max-height: calc(100vh - 100px); background: #000; border-radius: 8px; overflow: hidden; margin: 0 auto; }
+.stage video, .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.stage canvas { pointer-events: none; }
+.stage svg.calibration { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.stage svg.calibration.drawing { pointer-events: auto; cursor: crosshair; }
+.stage svg.calibration .body { stroke: #00e5ff; stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.stage svg.calibration .end { fill: #00e5ff; }
+/* Invisible, wider targets so the line and its ends are easy to grab. */
+.stage svg.calibration .hit { pointer-events: auto; stroke: transparent; fill: transparent; }
+.stage svg.calibration line.hit { stroke-width: 16px; vector-effect: non-scaling-stroke; cursor: move; }
+.stage svg.calibration .end-hit { cursor: grab; }
+.stage svg.calibration.drawing .hit { cursor: crosshair; }
+.placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); }
+.stats { display: flex; flex-wrap: wrap; gap: 16px; font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
+.stats span:first-child { color: var(--text); font-weight: 600; }
+.stats .metric b { color: var(--text); }
+.status { display: flex; flex-direction: column; gap: 4px; }
+.err { color: var(--err); }
+.warn { color: var(--warn); }
+em.err { font-style: normal; }
+@media (max-width: 760px) {
+  .app { grid-template-columns: 1fr; }
+  aside { max-height: none; border-right: none; border-bottom: 1px solid var(--line); }
+}

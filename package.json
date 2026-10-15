@@ -1,0 +1,14 @@
+{
+  "name": "detect",
+  "private": true,
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "dev": "npm run dev -w apps/web",
+    "build": "npm run build -w apps/web",
+    "test": "npm test -w packages/core",
+    "typecheck": "tsc -p packages/core && tsc -p apps/web"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3"
+  }
+}

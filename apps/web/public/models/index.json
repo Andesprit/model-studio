@@ -1,0 +1,6 @@
+[
+  { "name": "YOLOv8n detect", "file": "yolov8n.onnx" },
+  { "name": "YOLOv8n seg", "file": "yolov8n-seg.onnx" },
+  { "name": "YOLOv8n pose", "file": "yolov8n-pose.onnx" },
+  { "name": "YOLOv8n cls", "file": "yolov8n-cls.onnx" }
+]
