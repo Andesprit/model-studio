@@ -26,13 +26,31 @@ const MODELS_INDEX = `${import.meta.env.BASE_URL}models/index.json`;
 /** Sample models loaded on startup as model A and model B. */
 const VORTEX = "vortex_detector_fp32_with_pipeline.onnx";
 const PARTICLES = "particle_detector.onnx";
+const PARTICLES_TRACKING = "particle_detector_with_tracking.onnx";
 const PRELOAD = [VORTEX, PARTICLES];
 
-/** Short clips in public/examples, for trying the models without a video of your own. */
-const EXAMPLE_VIDEOS = [
-  { label: "Vortex", file: "vortex.mp4", models: [VORTEX], hint: "A vortex wall: the vortex model" },
-  { label: "Particles", file: "particles.mp4", models: [PARTICLES], hint: "Particles in a pump: the particle model" },
-  { label: "Both", file: "both.mp4", models: [VORTEX, PARTICLES], hint: "A turbine tube with a vortex rope and flakes: both models" },
+type ExampleModel = "vortex" | "particles" | "both";
+
+interface ExampleVideo {
+  label: string;
+  file: string;
+  src: string;
+  models: ExampleModel;
+}
+
+/** One example for each unique clip. Cropped variants stand in for their full-frame source. */
+const EXAMPLE_VIDEOS: ExampleVideo[] = [
+  { label: "Video 1", file: "type-1_inf.mp4", src: new URL("../../../videos/type-1_inf.mp4", import.meta.url).href, models: "vortex" },
+  { label: "Video 2", file: "type-1_sup.mp4", src: new URL("../../../videos/type-1_sup.mp4", import.meta.url).href, models: "vortex" },
+  { label: "Video 3", file: "type-2_inf.mp4", src: new URL("../../../videos/type-2_inf.mp4", import.meta.url).href, models: "vortex" },
+  { label: "Video 4", file: "type-2_sup.mp4", src: new URL("../../../videos/type-2_sup.mp4", import.meta.url).href, models: "vortex" },
+  { label: "Video 5", file: "type-3_inf.mp4", src: new URL("../../../videos/type-3_inf.mp4", import.meta.url).href, models: "vortex" },
+  { label: "Video 6", file: "type-3_sup.mp4", src: new URL("../../../videos/type-3_sup.mp4", import.meta.url).href, models: "vortex" },
+  { label: "Video 7", file: "bomba-2_tube_3.mp4", src: new URL("../../../videos/bomba-2_tube_3.mp4", import.meta.url).href, models: "particles" },
+  { label: "Video 8", file: "bomba_tube_3.mp4", src: new URL("../../../videos/bomba_tube_3.mp4", import.meta.url).href, models: "particles" },
+  { label: "Video 9", file: "turbina-sin-antorcha_tube_3.mp4", src: new URL("../../../videos/turbina-sin-antorcha_tube_3.mp4", import.meta.url).href, models: "particles" },
+  { label: "Video 10", file: "turbina-antorcha.mp4", src: new URL("../../../videos/turbina-antorcha.mp4", import.meta.url).href, models: "both" },
+  { label: "Video 11", file: "turbina-antorcha-ultima.mp4", src: new URL("../../../videos/turbina-antorcha-ultima.mp4", import.meta.url).href, models: "both" },
 ];
 
 /** One entry of the model list: a sample to download or a file the user picked. Loaded the first time it is ticked. */
@@ -79,6 +97,7 @@ export function App() {
   /** Every model in the list; its index is its slot in the frame loop. */
   const [models, setModels] = useState<ModelEntry[]>([]);
   const modelsRef = useRef<ModelEntry[]>([]);
+  const particleModelPreference = useRef(PARTICLES);
   const loading = models.some((m) => m.loading);
   /** Text of the last decoder failure; while it's the error shown, it already explains what to do. */
   const [decodeErrorText, setDecodeErrorText] = useState("");
@@ -267,6 +286,10 @@ export function App() {
   async function toggleModel(i: number, on: boolean) {
     setError("");
     const m = modelsRef.current[i];
+    const modelFile = m.sample?.url.split("/").pop();
+    if (on && (modelFile === PARTICLES || modelFile === PARTICLES_TRACKING)) {
+      particleModelPreference.current = modelFile;
+    }
     if (on && !m.runtime) return loadModel(i, true);
     patchModel(i, { on });
     loopRef.current!.setModel(i, on && m.runtime ? m.runtime : null, on && m.config ? m.config : null);
@@ -484,13 +507,19 @@ export function App() {
           <p className="hint">Or try an example:</p>
           <div className="samples">
             {EXAMPLE_VIDEOS.map((x) => (
-              <button key={x.file} title={x.hint} onClick={() => {
-                  // Run only the model(s) the clip is made for.
+              <button key={x.file} title={x.file} aria-label={`${x.label}: ${x.file}`} onClick={() => {
+                  const needsVortex = x.models === "vortex" || x.models === "both";
+                  const needsParticles = x.models === "particles" || x.models === "both";
                   models.forEach((m, i) => {
-                    const want = !!m.sample && x.models.includes(m.sample.url.split("/").pop()!);
+                    const modelFile = m.sample?.url.split("/").pop();
+                    const want = modelFile === VORTEX
+                      ? needsVortex
+                      : modelFile === PARTICLES || modelFile === PARTICLES_TRACKING
+                        ? needsParticles && modelFile === particleModelPreference.current
+                        : false;
                     if (m.sample && m.on !== want) void toggleModel(i, want);
                   });
-                  void startVideo(`${import.meta.env.BASE_URL}examples/${x.file}`, x.file);
+                  void startVideo(x.src, x.label);
                 }}>
                 {x.label}
               </button>
