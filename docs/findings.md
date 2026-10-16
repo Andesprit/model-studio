@@ -224,17 +224,25 @@ that repo, in `docs/lamp_frames.md` and `docs/model_studio.md`. What matters her
   416×232 (portrait), so how big the tube looks to the model depends only on how much of the frame it fills.
   At about 70 % it matches the training size. The model was trained without zoom, so a much smaller or larger
   lamp gives a worse mask.
-- **Cost: two network passes per frame.** A graph keeps no state between frames, so it can't skip the unused
-  orientation once the choice is locked.
+- **Cost: one network pass per frame once the orientation is locked.** A graph keeps no state between frames,
+  so the choice lives in the pipeline. The pipeline tells the graph which branch to run through the `mode`
+  input (an ONNX If node) and its `feeds()` hook.
 
-  | backend | where | network | shrinking a 4K frame |
+  Measured with the app's runtime and the embedded pipeline on a 4K phone video, on a PC:
+
+  | backend | network, deciding (both) | network, locked (one) | pipeline, deciding → locked |
   |---|---|---|---|
-  | WebGPU | PC | 38–47 ms | about 28 ms |
-  | WASM, several threads | same PC | about 60 ms | about 28 ms |
-  | onnxruntime, 1 thread | laptop CPU | 64 ms | - |
+  | WASM | 100 ms | 50 ms | 20 → 12 ms |
+  | WebGPU | 40 ms | 30 ms | 18 → 9 ms |
 
-  The 1-thread figure is the closest to GitHub Pages, which runs WASM on one thread. Not measured on a phone
-  yet.
+  - **On the GPU the gain is smaller**, because for a model this small, fixed per-run costs dominate.
+  - **Each If branch holds its own copy of the weights**, so the file is 1.5 MB, not 0.5. With the weights
+    shared from outside the branches, onnxruntime couldn't pre-pack them, and every mode ran about 35 % slower.
+  - **onnxruntime-web can't take a default value for `mode`**: feeding an input that also has a built-in value
+    fails with "invalid input". So `mode` is a plain input, and the app feeds zeros to any input nobody
+    supplies.
+- **Shrinking the frame onto the canvas costs more on large sources.** A 4K frame took about 28 ms during
+  playback. A 720p frame (the live camera's size) is about 10× cheaper to draw. Not measured on a phone yet.
 - **Not tested yet:**
   - a phone;
   - a lamp video the model has never seen. All five lamp videos were used in training.

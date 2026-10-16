@@ -78,6 +78,23 @@ describe("PipelineRunner", () => {
     ]);
   });
 
+  it("asks the instance for the next frame's extra model inputs, and gives none before it exists or on a rewind", () => {
+    const p = define({
+      name: "feeder",
+      create: () => {
+        let n = 0;
+        return { step: (r) => (n++, r), feeds: () => ({ mode: { dims: [1], data: new Float32Array([n]) } }) };
+      },
+    });
+    const runner = new PipelineRunner(p);
+    expect(runner.feeds(0)).toEqual({});
+    runner.run([{ outputs, config: config, transform: t }], 0.2);
+    expect(runner.feeds(0.3).mode.data[0]).toBe(1);
+    expect(runner.feeds(0.2).mode.data[0]).toBe(1); // a paused frame re-run keeps the instance
+    expect(runner.feeds(0.1)).toEqual({}); // time went backwards: run() will start a fresh instance
+    expect(new PipelineRunner(counter).feeds(0)).toEqual({}); // a pipeline without feeds()
+  });
+
   it("resets when time goes backwards but not when it stays or moves forward", () => {
     const runner = new PipelineRunner(counter);
     runner.run([{ outputs, config: config, transform: t }], 5);

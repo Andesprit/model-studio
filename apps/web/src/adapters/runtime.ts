@@ -16,7 +16,11 @@ export interface ModelRuntime {
   backend: Backend;
   input: InputInfo;
   outputNames: readonly string[];
-  run(input: Tensor): Promise<Record<string, Tensor>>;
+  /**
+   * Runs the model on the image tensor. `extra` holds values for the model's other inputs, by name; any other
+   * input missing from it gets zeros of its declared shape (unknown dims taken as 1).
+   */
+  run(input: Tensor, extra?: Record<string, Tensor>): Promise<Record<string, Tensor>>;
   release(): Promise<void>;
 }
 
@@ -44,25 +48,33 @@ export async function createRuntime(model: Uint8Array, preference: BackendPrefer
 }
 
 function wrap(session: ort.InferenceSession, backend: Backend): ModelRuntime {
-  const meta = (session as unknown as { inputMetadata?: { name: string; type?: string; shape?: (number | string)[] }[] })
-    .inputMetadata?.[0];
-  const input: InputInfo = {
-    name: session.inputNames[0],
-    shape: meta?.shape ? meta.shape.map((d) => (typeof d === "number" && d > 0 ? d : null)) : null,
-    type: meta?.type ?? "float32",
+  const metas = (session as unknown as { inputMetadata?: { name: string; type?: string; shape?: (number | string)[] }[] })
+    .inputMetadata;
+  const info = (name: string, i: number): InputInfo => {
+    const meta = metas?.[i];
+    return {
+      name,
+      shape: meta?.shape ? meta.shape.map((d) => (typeof d === "number" && d > 0 ? d : null)) : null,
+      type: meta?.type ?? "float32",
+    };
   };
+  // The first input is the image; any others are set by the model's pipeline (zeros when it doesn't).
+  const [input, ...others] = session.inputNames.map(info);
+  const toOrt = (to: InputInfo, t: Tensor) =>
+    to.type === "float16" ? new ort.Tensor("float16", toHalf(t.data), t.dims) : new ort.Tensor("float32", t.data, t.dims);
 
   return {
     backend,
     input,
     outputNames: session.outputNames,
-    async run(t) {
-      const feed =
-        input.type === "float16"
-          ? new ort.Tensor("float16", toHalf(t.data), t.dims)
-          : new ort.Tensor("float32", t.data, t.dims);
-      const results = await session.run({ [input.name]: feed });
-      feed.dispose();
+    async run(t, extra = {}) {
+      const feeds: Record<string, ort.Tensor> = { [input.name]: toOrt(input, t) };
+      for (const o of others) {
+        const dims = o.shape?.map((d) => d ?? 1) ?? [1];
+        feeds[o.name] = toOrt(o, extra[o.name] ?? { dims, data: new Float32Array(dims.reduce((a, b) => a * b, 1)) });
+      }
+      const results = await session.run(feeds);
+      for (const f of Object.values(feeds)) f.dispose();
       const out: Record<string, Tensor> = {};
       for (const name of session.outputNames) {
         const r = results[name];

@@ -60,10 +60,25 @@ const sideways = (t: Tensor): Tensor => {
   return { dims: [1, 1, H, W], data };
 };
 
-function run(frames: { logits: Tensor; logits_asis: Tensor }[]): Result[] {
-  const runner = new PipelineRunner(lamp, {}, null);
-  return frames.map((outputs, i) => runner.run([{ outputs, config, transform }], i / 30));
+const placeholder = (): Tensor => ({ dims: [1, 1, 1, 1], data: new Float32Array(1) });
+
+/**
+ * Runs the pipeline as the app does, with the graph's If emulated: before each frame the pipeline's feeds() give
+ * `mode` (none = zeros = 0); mode 1 replaces logits_asis by the placeholder, mode 2 replaces logits.
+ * `times` are the frames' timestamps (default 0, 1/30, 2/30...).
+ */
+function play(frames: { logits: Tensor; logits_asis: Tensor }[], times = frames.map((_, i) => i / 30), runner = new PipelineRunner(lamp, {}, null)) {
+  const modes: number[] = [];
+  const results: Result[] = frames.map((full, i) => {
+    const mode = runner.feeds(times[i]).mode?.data[0] ?? 0;
+    modes.push(mode);
+    const outputs = { logits: mode === 2 ? placeholder() : full.logits, logits_asis: mode === 1 ? placeholder() : full.logits_asis };
+    return runner.run([{ outputs, config, transform }], times[i]);
+  });
+  return { results, modes, runner };
 }
+
+const run = (frames: { logits: Tensor; logits_asis: Tensor }[]): Result[] => play(frames).results;
 
 describe("vortex lamp model", () => {
   it("embeds a manifest that reads as a gray, portrait, top-left letterbox binary mask", () => {
@@ -94,6 +109,27 @@ describe("lamp pipeline", () => {
     expect(results[11].metrics!["vortex orientation"]).toBe("horizontal");
     expect(Math.abs(Number(results[11].metrics!["vortex tilt deg"]))).toBeLessThan(1);
     expect(Number(results[11].metrics!["vortex present %"])).toBeGreaterThan(50);
+  });
+
+  it("asks for both branches until it locks, then only the locked one", () => {
+    const upright = play(Array.from({ length: 14 }, () => ({ logits: rope(0), logits_asis: scattered() })));
+    expect(upright.modes).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]);
+    const last = upright.results[13];
+    expect(last.metrics!["vortex orientation"]).toBe("vertical");
+    expect(Number(last.metrics!["vortex thickness px"])).toBeGreaterThan(0);
+    expect(last.segmentation!.classes.some((c) => c === 1)).toBe(true);
+    const flat = play(Array.from({ length: 12 }, () => ({ logits: scattered(), logits_asis: sideways(rope(0)) })));
+    expect(flat.modes.slice(10)).toEqual([2, 2]);
+    expect(flat.results[11].metrics!["vortex orientation"]).toBe("horizontal");
+  });
+
+  it("decides again, with both branches, after a seek back", () => {
+    const frames = Array.from({ length: 13 }, () => ({ logits: rope(0), logits_asis: scattered() }));
+    const times = [...Array.from({ length: 12 }, (_, i) => i / 30), 0]; // the 13th frame seeks back to the start
+    const { results, modes } = play(frames, times);
+    expect(modes[11]).toBe(1);
+    expect(modes[12]).toBe(0); // time went backwards: the runner starts fresh, so the graph runs both branches
+    expect(results[12].metrics!["vortex orientation"]).toBe("vertical (deciding 1/10)");
   });
 
   it("keeps only the largest piece of the mask", () => {
