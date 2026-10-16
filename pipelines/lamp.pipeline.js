@@ -1,12 +1,14 @@
 // Vortex lamp pipeline. Embedded in vortex_lamp_auto_*.onnx by 17_model_studio.py, so it loads with that model.
 //
-// The model only knows a rope that runs left to right. The ONNX graph therefore runs it twice on every frame:
+// The model only knows a rope that runs left to right. The ONNX graph can run it two ways:
 //   logits       the frame turned 90 deg counter-clockwise, then the mask turned back (a vertical rope: the lamp
 //                filmed upright, cap on top)
 //   logits_asis  the frame as it is (a rope that already runs left to right)
-// This pipeline scores both masks on the first DECIDE_FRAMES analyzed frames, keeps the better orientation for
-// the rest of the video, and measures the rope along its own axis. Before it decides, it shows the frame's better
-// mask. A reset (loop, seek back, new video) decides again.
+// Its `mode` input picks which (0 both, 1 logits only, 2 logits_asis only); the branch that does not run returns a
+// [1, 1, 1, 1] placeholder. This pipeline asks for both (feeds(), mode 0) and scores both masks on the first
+// DECIDE_FRAMES analyzed frames, then locks the better orientation and asks for that branch only, so the network
+// runs once per frame instead of twice. It measures the rope along its own axis. Before it decides, it shows the
+// frame's better mask. A reset (loop, seek back, new video) decides again.
 //
 // Score of a mask = mean probability of its rope pixels x share of those pixels in the largest piece. The wrong
 // orientation gives a weak, scattered mask (on the lamp test frames: IoU 0.18 and ~14 pieces vs 0.92 and 1-2).
@@ -51,17 +53,18 @@ export default {
   },
 
   decode(outputs, ctx) {
-    const opts = (name) => ({ outputName: name, mode: "binary", threshold: 0 });
-    const turned = ctx.lib.decode("semantic-seg", { logits: outputs.logits }, opts("logits")).segmentation;
-    const asis = ctx.lib.decode("semantic-seg", { logits_asis: outputs.logits_asis }, opts("logits_asis")).segmentation;
-    // scored on the whole mask; then only the largest piece is kept (there is one rope), as run_model.py does
-    const scores = { vertical: maskScore(outputs.logits, turned), horizontal: maskScore(outputs.logits_asis, asis) };
-    keepLargest(turned);
-    keepLargest(asis);
-    return {
-      segmentation: scores.vertical >= scores.horizontal ? turned : asis,
-      lamp: { masks: { vertical: turned, horizontal: asis }, scores },
-    };
+    const masks = {};
+    const scores = {};
+    for (const [which, name] of [["vertical", "logits"], ["horizontal", "logits_asis"]]) {
+      const t = outputs[name];
+      if (!t || t.data.length <= 1) continue; // the branch that did not run (placeholder)
+      const seg = ctx.lib.decode("semantic-seg", { [name]: t }, { outputName: name, mode: "binary", threshold: 0 }).segmentation;
+      // scored on the whole mask; then only the largest piece is kept (there is one rope), as run_model.py does
+      scores[which] = maskScore(t, seg);
+      keepLargest(seg);
+      masks[which] = seg;
+    }
+    return { segmentation: masks[better(scores)], lamp: { masks, scores } };
   },
 
   create(ctx) {
@@ -83,13 +86,17 @@ export default {
         const lamp = result.lamp;
         if (!lamp) return out;
         const isNew = lastT === null || frame.timestamp > lastT;
-        if (!locked && isNew) {
+        // only frames where both branches ran count toward the decision (the first frame after a reset may have
+        // run with the previous video's locked mode)
+        const both = "vertical" in lamp.scores && "horizontal" in lamp.scores;
+        if (!locked && isNew && both) {
           sums.vertical += lamp.scores.vertical;
           sums.horizontal += lamp.scores.horizontal;
-          if (++seen >= DECIDE_FRAMES) locked = sums.vertical >= sums.horizontal ? "vertical" : "horizontal";
+          if (++seen >= DECIDE_FRAMES) locked = better(sums);
         }
         lastT = frame.timestamp;
-        const which = locked ?? (lamp.scores.vertical >= lamp.scores.horizontal ? "vertical" : "horizontal");
+        const which = locked && lamp.masks[locked] ? locked : better(lamp.scores);
+        if (!which) return out;
         out.segmentation = lamp.masks[which];
         out.metrics["vortex orientation"] = locked ? which : `${which} (deciding ${seen}/${DECIDE_FRAMES})`;
         out.metrics["vortex orientation score vertical"] = round(sums.vertical, 2);
@@ -118,6 +125,8 @@ export default {
         }
         return out;
       },
+      // the graph's mode for the next frame: both branches until the orientation is locked, then that one only
+      feeds: () => ({ mode: { dims: [1], data: new Float32Array([locked === "vertical" ? 1 : locked === "horizontal" ? 2 : 0]) } }),
       summary: () => ({
         orientation: locked,
         orientationScores: { ...sums },
@@ -131,6 +140,14 @@ export default {
 // ---------------------------------------------------------------------------------------------------
 // Orientation
 // ---------------------------------------------------------------------------------------------------
+
+/** "vertical" or "horizontal", whichever scores higher (vertical on a tie), from the ones present; null if none. */
+function better(scores) {
+  const v = scores.vertical;
+  const h = scores.horizontal;
+  if (v === undefined) return h === undefined ? null : "horizontal";
+  return h === undefined || v >= h ? "vertical" : "horizontal";
+}
 
 /** Mean sigmoid of the rope pixels x share of the rope pixels in the largest 4-connected piece. */
 function maskScore(tensor, seg) {

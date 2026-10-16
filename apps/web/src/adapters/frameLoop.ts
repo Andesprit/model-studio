@@ -173,7 +173,8 @@ export class FrameLoop {
       const inferByModel: number[] = [];
       for (const [i, { runtime, config }] of loaded.entries()) {
         const t1 = performance.now();
-        const outputs = await runtime.run(prepared[i].tensor);
+        // The model's own pipeline can set its other inputs (e.g. which branch of the graph runs).
+        const outputs = await runtime.run(prepared[i].tensor, modelPipelines[slotIndex[i]]?.feeds(timestamp));
         inferByModel.push(performance.now() - t1);
         inputs.push({ outputs, config, transform: prepared[i].transform });
       }

@@ -1,5 +1,5 @@
 import { decode, explainDecode, lib, mergeResults, modelKey, runDecoder, utils } from "./decoders";
-import type { Calibration, MetricStats, ModelInput, PipelineDefinition, RunSummary, PipelineInstance, Result } from "./types";
+import type { Calibration, MetricStats, ModelInput, PipelineDefinition, RunSummary, PipelineInstance, Result, Tensor } from "./types";
 
 /** Builds a calibration from a measured line, or null if either length is missing or not positive. */
 export function makeCalibration(pixels: number, amount: number, unit: string): Calibration | null {
@@ -89,6 +89,16 @@ export class PipelineRunner {
   /** Processes one frame. `inputs` has one entry per loaded model, model A first. */
   run(inputs: ModelInput[], timestamp: number): Result {
     return this.track(timestamp, () => this.process(this.decodeInputs(inputs), inputs, timestamp));
+  }
+
+  /**
+   * The pipeline's extra model inputs for the frame at `timestamp` (its instance's feeds()), or none: before
+   * the first frame, and when time went backwards, since run() will then start a fresh instance.
+   */
+  feeds(timestamp: number): Record<string, Tensor> {
+    const instance = this.instance;
+    if (!instance?.feeds || timestamp < this.lastTimestamp) return {};
+    return blame(this.pipeline.name, "feeds", () => instance.feeds!());
   }
 
   /**

@@ -30,7 +30,7 @@ The models come with the repo, in `apps/web/public/models/`, and the app downloa
 (listed in `apps/web/public/models/index.json`; a `url` there can be relative or any absolute link):
 `vortex_detector_fp32_with_pipeline.onnx` (0.5 MB), `particle_detector.onnx` (39 MB, detection only),
 `particle_detector_with_tracking.onnx` (39 MB, the same detector plus a tracking pipeline) and
-`vortex_lamp_auto_fp32.onnx` (0.5 MB, the vortex lamp model with its pipeline).
+`vortex_lamp_auto_fp32.onnx` (1.5 MB, the vortex lamp model with its pipeline).
 Then:
 
 ```bash

@@ -231,6 +231,12 @@ export interface PipelineInstance {
   step(result: Result, frame: FrameInfo, models: Record<string, Result>): Result;
   /** Optional totals for the results file (per-particle speeds, counts…). Must be JSON-serializable. */
   summary?(): Record<string, unknown>;
+  /**
+   * Optional values for the model's inputs other than the image, by input name, used for the next frame
+   * (e.g. a mode switch inside the graph). Only a model's own pipeline is asked. An extra input that no
+   * pipeline supplies gets zeros.
+   */
+  feeds?(): Record<string, Tensor>;
 }
 
 /** Statistics of one numeric metric over the analyzed frames. */

@@ -62,6 +62,30 @@ The result to draw, plus optionally:
   `{ type: "polyline", points }`, `{ type: "point", at }`, `{ type: "text", at, text }`, each with an
   optional `color`.
 
+## Setting the model's other inputs
+
+A model can have inputs besides the image, for example a switch that picks which part of the graph runs.
+The model's own pipeline sets them with an optional `feeds()` next to `step`. The app calls it before each
+frame and passes the values to the model:
+
+```js
+create(ctx) {
+  let mode = 0;
+  return {
+    step(result, frame) { /* ... decide something, set mode ... */ return result; },
+    feeds: () => ({ mode: { dims: [1], data: new Float32Array([mode]) } }),
+  };
+}
+```
+
+- Keys are the model's input names, and values are float32 tensors (`dims`, `data`).
+- Any input that isn't supplied gets zeros of its declared shape. That includes the first frame, before the
+  pipeline has an instance, and the first frame after a rewind.
+- Only a model's own (embedded) pipeline is asked; a step-3 pipeline's `feeds()` is ignored.
+
+The lamp pipeline uses this to run its model's network once per frame instead of twice
+(`pipelines/lamp.pipeline.js`).
+
 ## Putting a pipeline inside a model
 
 ```bash

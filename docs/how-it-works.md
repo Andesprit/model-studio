@@ -125,17 +125,22 @@ Drawn: the rope's top and bottom edges (blue), its centreline (yellow) and its c
 
 ### Vortex lamp (`vortex-lamp` pipeline)
 
-For the vortex lamp filmed with a phone. The model only knows a rope that runs left to right. Its graph runs
-the network twice on every frame and returns two masks:
+For the vortex lamp filmed with a phone. The model only knows a rope that runs left to right. Its graph can
+run the network two ways and returns two masks:
 - `logits`: the frame turned 90° and the mask turned back, which is right for a rope running up and down;
 - `logits_asis`: the frame as it is.
 
-The pipeline picks between them:
+A second model input, `mode`, picks what runs: 0 both, 1 only `logits`, 2 only `logits_asis`. The output that
+doesn't run is a 1×1 placeholder.
 
-1. It scores both masks on every frame: mean probability of the rope pixels × share of those pixels in the
+The pipeline picks between the two:
+
+1. While deciding, it asks for both (`mode` 0, through its `feeds()`, see [pipelines](pipelines.md#setting-the-models-other-inputs))
+   and scores both masks on every frame: mean probability of the rope pixels × share of those pixels in the
    largest piece. The wrong orientation gives a weak, scattered mask.
-2. It adds up the scores over the first 10 analyzed frames, then locks the better orientation until the next
-   reset (loop, seek back, new video).
+2. It adds up the scores over the first 10 analyzed frames and locks the better orientation until the next
+   reset (loop, seek back, new video). From then on it asks for that branch only, so the network runs once per
+   frame instead of twice.
 3. It keeps only the largest piece of the mask, since there is one rope.
 4. It measures the rope slice by slice across its own axis: rows for a vertical rope, columns for a
    horizontal one.
