@@ -23,6 +23,10 @@
   },
   {
     "name": "Vortex lamp (auto orientation)",
+    "url": "vortex_lamp_auto_fp16.onnx"
+  },
+  {
+    "name": "Vortex lamp, fp32 (comparison)",
     "url": "vortex_lamp_auto_fp32.onnx"
   }
 ]
