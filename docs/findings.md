@@ -192,6 +192,53 @@ The vortex model's manifest scales the frame to half size onto a fixed 416×160 
 832×320 fit; larger ones get cut off (a 1024×1024 frame becomes 512×512 and only part fits). detector-app
 shrinks the scale automatically when a frame doesn't fit; this app doesn't yet.
 
+## The vortex lamp model
+
+`vortex_lamp_auto_fp32.onnx` comes from the `vortex-detector` repo: the rig's vortex training plus 200 frames
+from five handheld phone videos of a vortex lamp, each under a different light colour. The full write-up is in
+that repo, in `docs/lamp_frames.md` and `docs/model_studio.md`. What matters here:
+
+- **Colour.** Any light colour works. The model takes gray, and the app converts frames before the model.
+- **Orientation is chosen automatically.** The network only knows a rope that runs left to right. Turning
+  the frame before the network turned out better than training it on all orientations:
+
+  | test | turn the frame first | train on all orientations |
+  |---|---|---|
+  | lamp IoU | 0.92 | 0.86 |
+  | rig edge error | 0.81 px | 1.3–1.7 px |
+
+  So the graph runs both ways, and the pipeline locks the better one after 10 frames. That choice was right on
+  every frame tested:
+  - 30 of 30 held-out lamp frames filmed upright;
+  - 30 of 30 of the same frames turned sideways;
+  - 156 of 156 frames of a full phone video.
+- **Tilt: keep the phone within about 15° of upright.** The training had no tilt.
+
+  | tilt | 0–10° | 20° | 30° | 45° |
+  |---|---|---|---|---|
+  | IoU | 0.90 | 0.76 | 0.39 | 0.16 |
+
+  On diagonals the orientation score is no longer reliable either. The pipeline estimates the tilt from the
+  mask and warns above 15°.
+- **Framing: hold the phone upright, with the lamp about 70 % of the frame's width.** The canvas is a fixed
+  416×232 (portrait), so how big the tube looks to the model depends only on how much of the frame it fills.
+  At about 70 % it matches the training size. The model was trained without zoom, so a much smaller or larger
+  lamp gives a worse mask.
+- **Cost: two network passes per frame.** A graph keeps no state between frames, so it can't skip the unused
+  orientation once the choice is locked.
+
+  | backend | where | network | shrinking a 4K frame |
+  |---|---|---|---|
+  | WebGPU | PC | 38–47 ms | about 28 ms |
+  | WASM, several threads | same PC | about 60 ms | about 28 ms |
+  | onnxruntime, 1 thread | laptop CPU | 64 ms | - |
+
+  The 1-thread figure is the closest to GitHub Pages, which runs WASM on one thread. Not measured on a phone
+  yet.
+- **Not tested yet:**
+  - a phone;
+  - a lamp video the model has never seen. All five lamp videos were used in training.
+
 ## Deploying
 
 What limits the choice: the particle model is 39 MB and onnxruntime's engine ~27 MB; the CPU needs two

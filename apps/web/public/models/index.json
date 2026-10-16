@@ -20,5 +20,9 @@
       "iouThreshold": 0.35,
       "maxDetections": 1000
     }
+  },
+  {
+    "name": "Vortex lamp (auto orientation)",
+    "url": "vortex_lamp_auto_fp32.onnx"
   }
 ]
