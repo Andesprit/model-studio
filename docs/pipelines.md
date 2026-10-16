@@ -74,7 +74,7 @@ Embedding writes `MODEL_with_pipeline.onnx`, keeping the model's other metadata 
 keys); the graph isn't touched. It needs the `onnx` Python package. **Re-run it after every change** to the
 pipeline, and copy the new model to `apps/web/public/models/`.
 
-The sources of the two embedded pipelines are in `pipelines/`. Edit those, not the copy inside the model.
+The sources of the embedded pipelines (vortex, tracking, lamp) are in `pipelines/`. Edit those, not the copy inside the model.
 
 ## Examples
 

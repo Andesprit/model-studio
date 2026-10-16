@@ -83,6 +83,7 @@ can carry its own **inside the `.onnx`** (metadata key `model-studio.pipeline`),
 | `vortex_detector_fp32_with_pipeline.onnx` | `vortex` | `pipelines/vortex.pipeline.js` |
 | `particle_detector_with_tracking.onnx` | `tracking` | `pipelines/tracking.pipeline.js` |
 | `particle_detector.onnx` | none (detection only) | `pipelines/particles.pipeline.js` can be loaded on top in step 3 |
+| `vortex_lamp_auto_fp32.onnx` | `vortex-lamp` | `pipelines/lamp.pipeline.js` |
 
 Each model's pipeline runs on that model's output only. A model opened from disk asks before running its
 pipeline, since that's code; the app's own models don't ask.
@@ -121,6 +122,37 @@ bottom edge.
 | breathing Hz | expansions per second, from crossings of the average thickness over the last 60 analyzed frames |
 
 Drawn: the rope's top and bottom edges (blue), its centreline (yellow) and its centre (red dot).
+
+### Vortex lamp (`vortex-lamp` pipeline)
+
+For the vortex lamp filmed with a phone. The model only knows a rope that runs left to right. Its graph runs
+the network twice on every frame and returns two masks:
+- `logits`: the frame turned 90° and the mask turned back, which is right for a rope running up and down;
+- `logits_asis`: the frame as it is.
+
+The pipeline picks between them:
+
+1. It scores both masks on every frame: mean probability of the rope pixels × share of those pixels in the
+   largest piece. The wrong orientation gives a weak, scattered mask.
+2. It adds up the scores over the first 10 analyzed frames, then locks the better orientation until the next
+   reset (loop, seek back, new video).
+3. It keeps only the largest piece of the mask, since there is one rope.
+4. It measures the rope slice by slice across its own axis: rows for a vertical rope, columns for a
+   horizontal one.
+
+| Measurement | Meaning |
+|---|---|
+| orientation | vertical or horizontal; `(deciding n/10)` until it locks |
+| orientation score | each orientation's summed score over the deciding frames |
+| tilt deg | angle between the rope's main axis and the chosen orientation, median of the last 10 analyzed frames (positive = turned clockwise) |
+| tilt warning | shown above 15°, also drawn on the video: hold the phone straighter |
+| present %, area, area rate, size, thickness, waviness, breathing, breathing Hz | as in the `vortex` pipeline, taken across the rope's axis |
+| center | position of the centreline across the axis (from the top for a horizontal rope, from the left for a vertical one) |
+| drift speed | how fast the centreline moves across the axis (positive = toward the top or the left) |
+
+Drawn: the same edges, centreline and centre as the `vortex` pipeline, along the rope's real direction.
+
+What it needs (framing, tilt, speed): [findings](findings.md#the-vortex-lamp-model).
 
 ### Particles (`particles` pipeline)
 

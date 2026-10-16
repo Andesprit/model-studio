@@ -8,7 +8,11 @@ It's set up for the rig's two models:
 - **Particles**: detects the particles (flakes), tracks them, and measures how many there are and how fast
   they move.
 
-Both run at the same time on the same frames. Everything runs on your computer (WebGPU on the GPU, or WASM
+There is also a **Vortex lamp** model for a desk vortex lamp filmed with a phone. It works out whether the rope
+runs up and down or left to right, and takes the same measurements along the rope (see
+[how it works](docs/how-it-works.md#vortex-lamp-vortex-lamp-pipeline)).
+
+Both rig models run at the same time on the same frames. Everything runs on your computer (WebGPU on the GPU, or WASM
 on the CPU); nothing is uploaded. At the end, **Download results** saves everything that was measured as a
 JSON file.
 
@@ -24,8 +28,9 @@ npm install
 
 The models come with the repo, in `apps/web/public/models/`, and the app downloads them by URL
 (listed in `apps/web/public/models/index.json`; a `url` there can be relative or any absolute link):
-`vortex_detector_fp32_with_pipeline.onnx` (0.5 MB), `particle_detector.onnx` (39 MB, detection only) and
-`particle_detector_with_tracking.onnx` (39 MB, the same detector plus a tracking pipeline).
+`vortex_detector_fp32_with_pipeline.onnx` (0.5 MB), `particle_detector.onnx` (39 MB, detection only),
+`particle_detector_with_tracking.onnx` (39 MB, the same detector plus a tracking pipeline) and
+`vortex_lamp_auto_fp32.onnx` (0.5 MB, the vortex lamp model with its pipeline).
 Then:
 
 ```bash
@@ -36,8 +41,10 @@ and open http://localhost:5173. Both models load on their own, each with its ana
 
 ## Using it
 
-1. **Model**: one checkbox per model (vortex, particles, particles + tracking). Vortex and particles are loaded
-   on start; the third downloads when you tick it. Any ticked models run together, and each frame takes about
+1. **Model**: one checkbox per model (vortex, particles, particles + tracking, vortex lamp). Vortex and
+   particles are loaded on start; the others download when you tick them. For the lamp, untick the other two
+   and hold the phone upright with the lamp about 70 % of the frame's width
+   ([why](docs/findings.md#the-vortex-lamp-model)). Any ticked models run together, and each frame takes about
    the sum of their times, so fewer models is faster.
 2. **Config**: how each model reads its input and output. Filled in from the model itself; you normally don't
    touch it.
@@ -83,7 +90,7 @@ apps/web/              the app (React + Vite): UI, camera/video, onnxruntime-web
   public/models/       the models the app loads, and index.json (the list it shows and preloads)
 packages/core/         the logic, no browser code: config, preprocessing, decoders, pipelines, tracker
   test/                unit tests
-pipelines/             the analysis built into each model (vortex, particles): the source to edit
+pipelines/             the analysis built into each model (vortex, particles, lamp): the source to edit
 examples/              other pipelines and a config, for other kinds of models
 scripts/               embed_pipeline.py
 docs/                  how it works, findings, history
