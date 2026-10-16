@@ -1,5 +1,6 @@
 /**
- * The vortex lamp model (apps/web/public/models/vortex_lamp_auto_fp32.onnx) and its pipeline (pipelines/lamp.pipeline.js):
+ * The vortex lamp models (apps/web/public/models/vortex_lamp_auto_fp16.onnx and _fp32.onnx, the same graph in two
+ * precisions) and their pipeline (pipelines/lamp.pipeline.js):
  * the embedded manifest and pipeline, and the pipeline's orientation choice, largest-piece filter and tilt warning on
  * synthetic logits. The model outputs both orientations: `logits` (frame seen turned, right for a vertical rope) and
  * `logits_asis` (frame as it is, right for a horizontal rope).
@@ -20,8 +21,9 @@ import {
 
 const root = `${process.cwd()}/../..`;
 const pipelineFile = `${root}/pipelines/lamp.pipeline.js`;
-const meta = readOnnxMetadata(new Uint8Array(readFileSync(`${root}/apps/web/public/models/vortex_lamp_auto_fp32.onnx`)));
-const config = configFromMetadata(meta)!;
+const modelMeta = (precision: string) =>
+  readOnnxMetadata(new Uint8Array(readFileSync(`${root}/apps/web/public/models/vortex_lamp_auto_${precision}.onnx`)));
+const config = configFromMetadata(modelMeta("fp16"))!;
 const lamp = definePipeline((await import(pathToFileURL(pipelineFile).href)).default);
 
 const H = 416;
@@ -80,11 +82,14 @@ function play(frames: { logits: Tensor; logits_asis: Tensor }[], times = frames.
 
 const run = (frames: { logits: Tensor; logits_asis: Tensor }[]): Result[] => play(frames).results;
 
-describe("vortex lamp model", () => {
+describe.each(["fp16", "fp32"])("vortex lamp model, %s", (precision) => {
+  const meta = modelMeta(precision);
+
   it("embeds a manifest that reads as a gray, portrait, top-left letterbox binary mask", () => {
-    expect(config.decoder).toBe("semantic-seg");
-    expect(config.input).toMatchObject({ width: W, height: H, channels: 1, resize: "letterbox", align: "top-left", padValue: 0 });
-    expect(config.options).toMatchObject({ outputName: "logits", mode: "binary", threshold: 0 });
+    const c = configFromMetadata(meta)!;
+    expect(c.decoder).toBe("semantic-seg");
+    expect(c.input).toMatchObject({ width: W, height: H, channels: 1, resize: "letterbox", align: "top-left", padValue: 0 });
+    expect(c.options).toMatchObject({ outputName: "logits", mode: "binary", threshold: 0 });
   });
 
   it("embeds pipelines/lamp.pipeline.js unchanged", () => {

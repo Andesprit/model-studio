@@ -194,7 +194,7 @@ shrinks the scale automatically when a frame doesn't fit; this app doesn't yet.
 
 ## The vortex lamp model
 
-`vortex_lamp_auto_fp32.onnx` comes from the `vortex-detector` repo: the rig's vortex training plus 200 frames
+`vortex_lamp_auto_fp16.onnx` (and its float32 twin `vortex_lamp_auto_fp32.onnx`) comes from the `vortex-detector` repo: the rig's vortex training plus 200 frames
 from five handheld phone videos of a vortex lamp, each under a different light colour. The full write-up is in
 that repo, in `docs/lamp_frames.md` and `docs/model_studio.md`. What matters here:
 
@@ -236,11 +236,24 @@ that repo, in `docs/lamp_frames.md` and `docs/model_studio.md`. What matters her
   | WebGPU | 40 ms | 30 ms | 18 → 9 ms |
 
   - **On the GPU the gain is smaller**, because for a model this small, fixed per-run costs dominate.
-  - **Each If branch holds its own copy of the weights**, so the file is 1.5 MB, not 0.5. With the weights
-    shared from outside the branches, onnxruntime couldn't pre-pack them, and every mode ran about 35 % slower.
+  - **Each If branch holds its own copy of the weights**, so the float32 file is 1.5 MB, not 0.5. With the
+    weights shared from outside the branches, onnxruntime couldn't pre-pack them, and every mode ran about 35 %
+    slower.
   - **onnxruntime-web can't take a default value for `mode`**: feeding an input that also has a built-in value
     fails with "invalid input". So `mode` is a plain input, and the app feeds zeros to any input nobody
     supplies.
+- **Float16 is the default; float32 is listed for comparison.** The network runs in float16 inside, with
+  float32 input and output, so the app and the pipeline see no difference. The masks came out identical to
+  float32: 0 of 96,512 cells differ. The file is half the size (0.8 MB).
+
+  | backend (PC, Intel integrated GPU) | fp32, one pass | fp16, one pass | fp32, both | fp16, both |
+  |---|---|---|---|---|
+  | WebGPU | 28.6 ms | 23.9 ms | 36.4 ms | 29.1 ms |
+  | WASM | 23.0 ms | 23.3 ms | 43.7 ms | 46.0 ms |
+
+  GPUs compute float16 natively, so WebGPU gains (1.2× here). WASM doesn't, and stays the same. Phone GPUs may
+  gain more or less; compare the two entries on the phone. Once it's clear the fp16 entry is no worse there,
+  the fp32 entry can go.
 - **Shrinking the frame onto the canvas costs more on large sources.** A 4K frame took about 28 ms during
   playback. A 720p frame (the live camera's size) is about 10× cheaper to draw. Not measured on a phone yet.
 - **Not tested yet:**
