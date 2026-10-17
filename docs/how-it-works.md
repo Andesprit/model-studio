@@ -79,9 +79,11 @@ what to try.
 
 ### The model list
 
-`apps/web/public/models/index.json` is the full list shown in **Advanced → Models and backend**. No model
-loads on startup. Choosing **Vortex lamp**, **Rig vortex** or **Particles** downloads only that target's
-model and switches the others off. Advanced checkboxes can enable any combination, downloading each
+`apps/web/public/models/index.json` is the full list shown in **Advanced → Models and backend**. A fresh visit
+loads no model. A remembered subject or a `?target=lamp|vortex|particles` link preselects it; lamp and rig
+models load on open, while particles waits for a source or another subject tap. Choosing **Vortex lamp**,
+**Rig vortex** or **Particles** downloads only that target's model and switches the others off.
+Advanced checkboxes can enable any combination, downloading each
 model only the first time it is selected. An entry can carry recommended decoder options; the particle model's are
 from its training notes (confidence 0.20, overlap 0.35, up to 1000 detections, since the default 300 cuts
 off dense frames).

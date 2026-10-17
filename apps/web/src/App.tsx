@@ -4,6 +4,7 @@ import { FrameLoop, type Stats } from "./adapters/frameLoop";
 import { errorMessage, webgpuSupported, type BackendPreference, type ModelRuntime } from "./adapters/runtime";
 import { clearGpuVerdicts, createCheckedRuntime, type GpuVerification } from "./adapters/gpuCheck";
 import { checkInputShape, downloadJson, inferConfig, loadConfigFile, loadPipeline, loadPipelineSource } from "./loaders";
+import { readInitialTarget, rememberTarget, type Target } from "./subjects";
 import { CalibrationLine, lineLength, type Line } from "./ui/CalibrationLine";
 import { ConfigEditor, OptionField, SHOW_OPTIONS } from "./ui/ConfigEditor";
 import { KeyMetrics } from "./ui/KeyMetrics";
@@ -34,7 +35,6 @@ const TARGETS = [
   { id: "vortex", name: "Rig vortex", file: VORTEX },
   { id: "particles", name: "Particles", file: PARTICLES },
 ] as const;
-type Target = typeof TARGETS[number]["id"];
 
 type ExampleModel = "vortex" | "particles" | "both";
 
@@ -99,7 +99,7 @@ export function App() {
   const streamRef = useRef<MediaStream | null>(null);
 
   const [source, setSource] = useState<Source>(null);
-  const [target, setTarget] = useState<Target | null>(null);
+  const [target, setTarget] = useState<Target | null>(readInitialTarget);
   const [sourceName, setSourceName] = useState("");
   const [aspect, setAspect] = useState(16 / 9);
   const [backendPref, setBackendPref] = useState<BackendPreference>("auto");
@@ -145,6 +145,7 @@ export function App() {
         if (modelListLoaded.current) return;
         modelListLoaded.current = true;
         updateModels(() => list.map((sample) => ({ key: sample.url, name: sample.name, sample, configSource: "", decoderGuessed: false, on: false, loading: false, trusted: true })));
+        if (target && target !== "particles") chooseTarget(target);
       });
     return () => p.stop();
   }, []);
@@ -306,6 +307,7 @@ export function App() {
   function chooseTarget(next: Target) {
     const file = TARGETS.find((t) => t.id === next)!.file;
     setTarget(next);
+    rememberTarget(next);
     setStats(null);
     loopRef.current?.resetPipeline();
     modelsRef.current.forEach((m, i) => {
@@ -313,6 +315,15 @@ export function App() {
       if (m.on !== want) void toggleModel(i, want);
     });
     loopRef.current?.refresh();
+  }
+
+  /** A preselected large model waits for a source tap instead of using mobile data on open. */
+  function startSelectedTarget() {
+    if (!target) return;
+    rememberTarget(target);
+    const file = TARGETS.find((t) => t.id === target)!.file;
+    const i = modelsRef.current.findIndex((m) => m.sample?.url.split("/").pop() === file);
+    if (i >= 0 && !modelsRef.current[i].on && !modelsRef.current[i].loading) void toggleModel(i, true);
   }
 
   function chooseExample(example: ExampleVideo) {
@@ -391,6 +402,7 @@ export function App() {
   }
 
   async function startCamera() {
+    startSelectedTarget();
     stopSource();
     setError("");
     try {
@@ -411,7 +423,10 @@ export function App() {
     }
   }
 
-  const startVideoFile = (file: File) => startVideo(URL.createObjectURL(file), file.name);
+  const startVideoFile = (file: File) => {
+    startSelectedTarget();
+    return startVideo(URL.createObjectURL(file), file.name);
+  };
 
   async function startVideo(src: string, name: string) {
     stopSource();
@@ -478,10 +493,11 @@ export function App() {
       {hasSelection && (
         <div className="source-bar">
           <div className="row">
-            <button onClick={startCamera} className={source === "camera" ? "active" : ""}>Camera</button>
-            <FileButton label="Video file" accept="video/*" onFile={startVideoFile} active={source === "file"} />
+            <button onClick={startCamera} disabled={!models.length} className={source === "camera" ? "active" : ""}>Camera</button>
+            <FileButton label="Video file" accept="video/*" onFile={startVideoFile} active={source === "file"} disabled={!models.length} />
           </div>
           {target === "lamp" && !source && <p className="hint">Hold the phone upright, with the lamp filling about 70% of the frame width.</p>}
+          {target === "particles" && !loading && !models.some((m) => m.sample?.url.split("/").pop() === PARTICLES && m.on) && <p className="hint">Particles model (39 MB) downloads when you start.</p>}
           {examples.length > 0 && (
             <details className="examples">
               <summary>Try an example</summary>
