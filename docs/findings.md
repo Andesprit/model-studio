@@ -3,6 +3,45 @@
 What we learned building and testing the app, with the numbers we measured. Unless said otherwise, the PC
 numbers are from an AMD Ryzen 3 3200G (4 cores, Radeon Vega GPU) in Chrome.
 
+## Before and after
+
+These comparisons were measured in a visible PC browser with a **390×844 phone viewport**, with
+desktop checks at 1440×900, **not on a physical phone**. They summarize separate tests of the main
+path, frame preparation and CPU worker; they are not one continuous benchmark or a phone-speed claim.
+
+| Measurement | Before | After | Details |
+|---|---|---|---|
+| Controls at a fresh open | 30 | 4 | [Main-path startup](#main-path-startup) |
+| Models downloaded at a fresh open | 41.0 MB | 0.0 MB | [Main-path startup](#main-path-startup) |
+| App taps to a live lamp mask | 4, plus scrolling | 2 without scrolling; 1 on return | [Main-path startup](#main-path-startup) |
+| Preparation per 4K lamp frame | About 30 ms | About 5 ms | [GPU timings](#timings-on-the-pc-gpu) |
+| Main-thread blocking per 10 s, single-threaded CPU path | About 4.7 s | 0 s observed | [CPU worker](#cpu-inference-runs-off-the-page) |
+| Open to first analyzed lamp frame, fast local connection | About 3.6–4.6 s | About 2.0–2.2 s (camera medians) | [Startup conditions](#main-path-startup), [GPU-check timings](#phones-the-gpu-can-compute-wrong-results) |
+
+### Main-path startup
+
+The original page exposed 30 controls and requested 41.0 MB of models without any interaction:
+0.54 MB for rig vortex and 40.50 MB for particles (decimal MB, uncompressed file sizes). A fresh
+profile with no subject link now requests 0.0 MB of models in the first 15 seconds and exposes four
+controls: **Vortex lamp**, **Rig vortex**, **Particles** and **Advanced**. A remembered subject or
+`?target=` link can load the chosen lamp or rig model on open; particles remains deferred until a
+source starts or its subject is tapped again. The inference engine is separate from these model totals
+and is still needed after selection.
+
+The old lamp path needed four taps to enable the lamp, disable both preloaded models and start a
+source, plus about two screens of scrolling. The new path needs two: **Vortex lamp**, then **Camera**
+or **Video file**, with the mask and key measurements visible without scrolling. Returning to a
+remembered lamp takes one source tap. Browser permission prompts and the OS file picker are excluded.
+
+Before, unthrottled local Vite runs reached the first lamp frame in 3.6–3.7 s with a 720×1280 fake
+camera and 3.9–4.6 s with a 2160×3840 video, across phone and desktop viewports. Later fresh-profile
+phone-viewport camera medians were about 2.0–2.2 s, including the automatic GPU check. The repeated
+GPU-check comparison below reports medians of 2.02 s with isolation and 2.06 s single-threaded;
+an independent three-run single-threaded repeat measured 2.16 s.
+These timings start at navigation with app taps made as soon as available. Sources and protocols
+differ between those test series; the newer camera timings do not establish the same gain for 4K
+video or a slow production connection.
+
 ## Phones: the GPU can compute wrong results
 
 **Symptom.** On an Oppo A6K (Qualcomm Adreno 6xx GPU) with the GPU backend, every frame gave the maximum
@@ -120,6 +159,12 @@ windows had zero long tasks. Dev's median is small because most individual CPU c
 threshold, even though they interrupt animation. The largest animation-callback gap was 250 ms on the
 production page path and 33 ms with workers; dev was 100 ms and 17 ms. No worker window had a gap over
 50 ms. These animation callbacks measure page responsiveness, not the camera's capture rate.
+
+An independent repeat on the production build without isolation measured **4650 and 4699 ms** of total
+blocking time in two ten-second camera windows before the worker, and **0 ms** in both windows after.
+Median inference stayed at 78.3–79.9 ms before and 78.0–78.5 ms after, with 12 analyzed fps in all four
+windows. This is the approximately 4.7 s to zero comparison in the summary above; the per-order table
+reports the separate six-pair measurement.
 
 The first prototype lost analyzed frames by waiting for another video callback after a reply. The final
 CPU path remembers whether a live frame arrived while busy, then analyzes the latest frame immediately

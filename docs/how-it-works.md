@@ -1,5 +1,32 @@
 # How it works
 
+## The main path
+
+Choose **Vortex lamp**, **Rig vortex** or **Particles**, then **Camera** or **Video file**. A fresh visit
+downloads no model until you choose; only the chosen model loads. You can start the source while it
+loads. The live mask or detections appear with **Key measurements** and a trend of the last ten seconds
+of thickness or particle count. The lamp card shows orientation, thickness, breathing and waviness,
+with a warning when the rope looks tilted.
+
+On the lamp camera, framing lines help fit the lamp to about 70 % of the image width until orientation
+locks. **Phone tilt** uses the motion sensor when permission and readings are available; the guide
+still works without it. The sensor's alignment with the camera has not been verified on a real phone.
+See the [lamp limits](findings.md#the-vortex-lamp-model). Portrait puts the readings below the video;
+the compact phone landscape layout puts them beside it, keeping the live view and **Finish** on screen.
+Desktop also shows the video and readings side by side.
+
+With an embedded pipeline, **Finish** ends a camera session and releases the camera, leaving its last
+frame and **Camera session summary**. A video reaching its end shows **Video summary**. Both recaps
+show the analyzed time span and frame counts, measurement statistics and latest breathing readings;
+too few frames gives a short note. **Share** sends the recap text, or copies it when native sharing is
+unavailable. **Download results (.json)** saves the full measurements in the [results format](#the-results-file).
+
+The subject is remembered on this device. Links with `?target=lamp`, `?target=vortex` or
+`?target=particles` override that choice. Lamp and rig models start loading on return; particles waits
+for a source or another subject tap, avoiding an automatic large download. A returning lamp user only
+needs to tap **Camera**. **Advanced** starts collapsed and keeps model combinations, backend choice,
+model and config files, pipeline files and calibration available.
+
 ## The big picture
 
 ```
