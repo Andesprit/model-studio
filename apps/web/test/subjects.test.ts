@@ -21,9 +21,10 @@ describe("initial subject", () => {
   });
 
   it.each(["lamp", "vortex", "particles"])("accepts a %s link before storage", (target) => {
-    const { storage } = browser(`https://example.com/model-studio/?target=${target}`, "vortex");
+    const { storage, history } = browser(`https://example.com/model-studio/?target=${target}`, "vortex");
     expect(readInitialTarget()).toBe(target);
     expect(storage.getItem).not.toHaveBeenCalled();
+    expect(history.replaceState).not.toHaveBeenCalled();
   });
 
   it.each(["lamp", "vortex", "particles"])("remembers %s without a link", (target) => {
@@ -33,8 +34,16 @@ describe("initial subject", () => {
   });
 
   it("ignores an invalid link and uses the remembered subject", () => {
-    browser("https://example.com/model-studio/?target=invalid", "lamp");
+    const { history } = browser("https://example.com/model-studio/?other=value&target=invalid#video", "lamp");
     expect(readInitialTarget()).toBe("lamp");
+    expect(history.replaceState).toHaveBeenCalledWith(history.state, "", new URL("https://example.com/model-studio/?other=value#video"));
+  });
+
+  it.each(["bogus", "", "LAMP", "../lamp"])("removes ignored target %s even when storage is blocked", (target) => {
+    const { storage, history } = browser(`https://example.com/model-studio/?target=${target}&other=value#video`);
+    storage.getItem.mockImplementation(() => { throw new Error("blocked"); });
+    expect(readInitialTarget()).toBeNull();
+    expect(history.replaceState).toHaveBeenCalledWith(history.state, "", new URL("https://example.com/model-studio/?other=value#video"));
   });
 
   it.each(["", "invalid", "LAMP", "../lamp"])("ignores invalid stored value %s", (saved) => {

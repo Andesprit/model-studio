@@ -209,7 +209,7 @@ export function App() {
       calibration,
       // Only the models that were switched on, each with what its own pipeline measured.
       models: models.flatMap((m, i) => (m.on && m.runtime ? [model(i, m.name, m.runtime.backend)] : [])),
-      // A pipeline loaded in step 3 runs on all models together; its results go here.
+      // A pipeline loaded in Advanced runs on all models together; its results go here.
       ...(global && { pipeline: global.pipeline.name, ...global.summary() }),
     };
     const names = [global?.pipeline.name, ...modelRunners.current.filter((_, i) => models[i]?.on).map((r) => r?.pipeline.name)].filter(Boolean);
@@ -491,7 +491,7 @@ export function App() {
     if (m.decoderGuessed && !pipeline?.decode && showGuessWarnings) {
       out.push(
         `${prefix}We don't know how to read this model's output, so we're trying "${m.config!.decoder}". ` +
-          "If the results look wrong, pick another decoder in step 2, or load a Config .json or a Pipeline .js with its own decode.",
+          "If the results look wrong, open Advanced: in Model config, pick another decoder or load a Config .json; in Pipeline, load a Pipeline .js with its own decode.",
       );
     }
     const shape = checkInputShape(m.config!, m.runtime!.input);

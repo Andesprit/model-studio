@@ -55,7 +55,7 @@ grabber and tensor conversion. We also checked the lamp's locked modes. Worst he
 plus noise, all zeros, and particle confidences fixed at 0.5. The 0.05 threshold sits 3.88 times above the
 worst healthy error and 4.45 times below the smallest tested fault. Sign agreement alone fails on tiny
 particle scores (only 80% agreement despite near-identical numbers); correlation misses constant offsets.
-Raw measurements and the reproducing scripts are in `.atelier/goal/evidence/gpu-check/separation.json`.
+These comparisons used local test scripts on that one Intel GPU; they do not cover other GPUs.
 
 Creating the additional WASM session and running one test took **198–220 ms** for the lamp with four
 threads, **303 ms** single-threaded (as deployed), and **68–102 ms** for rig vortex. The 40 MB particle
@@ -126,10 +126,9 @@ harness to avoid measuring idle time after it ended. Normal playback with a pipe
 On 24 identical seek-stepped 4K frames in each threading setup, the worker's raw CPU outputs, decoded
 masks, key measurements and complete embedded-pipeline summaries matched the original exactly. The
 tests also verified that image buffers transferred and pipeline feed buffers stayed usable. Worker and
-WASM assets load under the production URL prefix. Reproduce with
-`node .atelier/goal/evidence/worker/matrix.mjs` and `node .atelier/goal/evidence/worker/equality.mjs`
-(also set `SINGLE_THREAD=1` for the latter). Raw runs and screenshots are under
-`.atelier/goal/evidence/worker/`; `blocking.json` retains the earlier probe and the final build comparison.
+WASM assets load under the production URL prefix. Local test scripts measured the paired camera runs
+above and compared seek-stepped frames with and without cross-origin isolation. Equality checks covered
+raw outputs, decoded masks, measurements and pipeline summaries in both threading setups.
 This does not establish performance on a physical phone or remove the remaining preparation and pipeline
 work from the page.
 
