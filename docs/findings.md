@@ -33,15 +33,51 @@ and compared the raw outputs, before any decoding:
 uses. It's outside our code; the same models are correct on that phone's CPU and on the PC's GPU and CPU.
 We only tested one phone, so we don't know which other phones are affected.
 
-**What to do now.** On a phone, if detections look wrong, set **Backend → WASM (CPU)**. Changing the backend
-reloads the models straight away.
+**Automatic check for small models.** With Backend **Auto**, models up to 3 MB (both lamp entries, rig
+vortex, and small models opened from disk) are checked when they first load on WebGPU. The app runs the
+same deterministic image through WebGPU and WASM, using the model's own input normalization. Other inputs
+are zero-filled, including lamp `mode=0`, which exercises both orientation branches. For each output it
+computes `sqrt(mean(((gpu - wasm) / max(1, abs(wasm))) ** 2))`. Any output above **0.05**, a nonfinite
+value, or mismatched output names or shapes fails the check. On disagreement, Auto keeps the WASM session
+and shows a CPU notice above the video. On agreement, it releases the test session and keeps WebGPU.
 
-**Possible fixes, not built yet.**
-1. Start every model on the CPU and switch to the GPU only after a test inference matches the CPU's output;
-   remember the verdict per device. Every device would end up on whichever backend is correct for it.
-2. Try onnxruntime settings that change which GPU code runs (convolution layout, optimization level), in
+The verdict is remembered in localStorage by GPU vendor/architecture and model URL (file name for disk
+models). A later visit skips validation, going straight to WASM after a mismatch. Blocked storage does
+not prevent analysis, but the check repeats on later loads. **Advanced** shows per-model verification and
+offers **Check GPU again**, which forgets the verdicts and reloads the loaded models. Explicit **WebGPU**
+keeps that backend and warns after a mismatch; explicit **WASM** does not run a check. All session changes
+and test inferences run inside the frame loop's model-change guard.
+
+**Calibration and cost, PC only.** On an Intel gen-12lp GPU in visible Chromium 148, we compared each of
+the three target models on a synthetic input and five real video frames, prepared with the app's frame
+grabber and tensor conversion. We also checked the lamp's locked modes. Worst healthy scaled RMS was
+**0.01290**; the smallest simulated fault was **0.22252**. Faults were a constant offset, scrambled values
+plus noise, all zeros, and particle confidences fixed at 0.5. The 0.05 threshold sits 3.88 times above the
+worst healthy error and 4.45 times below the smallest tested fault. Sign agreement alone fails on tiny
+particle scores (only 80% agreement despite near-identical numbers); correlation misses constant offsets.
+Raw measurements and the reproducing scripts are in `.atelier/goal/evidence/gpu-check/separation.json`.
+
+Creating the additional WASM session and running one test took **198–220 ms** for the lamp with four
+threads, **303 ms** single-threaded (as deployed), and **68–102 ms** for rig vortex. The 40 MB particle
+models are deliberately **not checked**: their test alone took **1.49 s** with four threads and **4.58 s**
+with one on this PC. Select **Advanced → Backend → WASM (CPU)** if particle results look wrong. Changing
+the backend reloads the models straight away.
+
+In the full app, a fresh phone-sized camera run reached the first lamp frame in **3.45 s**, against
+**2.85–3.0 s** before checking, with the same two taps and measurements visible without scrolling.
+Reloading in that profile took **1.11 s** and created no WASM test session. Desktop measured **3.20 s**
+then **0.97 s**. Under the same simulated offset, the old app's mask had IoU as low as **0.687** against
+WASM; automatic fallback matched forced WASM masks and measurements exactly on 12 identical 4K frames.
+These are local PC browser timings, not physical-phone or production-network measurements.
+
+This threshold has been calibrated on **one healthy GPU**, and fallback tested with simulated errors.
+The affected Adreno phone was unavailable for this check. A single synthetic image can catch gross math
+faults like the tested cases; agreement does not prove correct results for all inputs or devices.
+
+**Other possible fixes, not built yet.**
+1. Try onnxruntime settings that change which GPU code runs (convolution layout, optimization level), in
    case one avoids the bug.
-3. For real phone performance, a native app: it can use the phone's NPU/DSP (e.g. LiteRT with the
+2. For real phone performance, a native app: it can use the phone's NPU/DSP (e.g. LiteRT with the
    `.tflite` int8 model, or native onnxruntime with NNAPI/QNN), which a browser can't reach. `packages/core`
    has no browser code, so it could be reused there.
 

@@ -1,7 +1,8 @@
 import { DecodeError, makeCalibration, modelKey, PIPELINE_METADATA_KEY, PipelineRunner, readOnnxMetadata, type ModelConfig, type PipelineDefinition } from "@detect/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FrameLoop, type Stats } from "./adapters/frameLoop";
-import { createRuntime, errorMessage, webgpuSupported, type BackendPreference, type ModelRuntime } from "./adapters/runtime";
+import { errorMessage, webgpuSupported, type BackendPreference, type ModelRuntime } from "./adapters/runtime";
+import { clearGpuVerdicts, createCheckedRuntime, type GpuVerification } from "./adapters/gpuCheck";
 import { checkInputShape, downloadJson, inferConfig, loadConfigFile, loadPipeline, loadPipelineSource } from "./loaders";
 import { CalibrationLine, lineLength, type Line } from "./ui/CalibrationLine";
 import { ConfigEditor, OptionField, SHOW_OPTIONS } from "./ui/ConfigEditor";
@@ -66,6 +67,7 @@ interface ModelEntry {
   sample?: Sample;
   bytes?: Uint8Array;
   runtime?: ModelRuntime;
+  gpuVerification?: GpuVerification;
   config?: ModelConfig;
   /** A config file the user loaded for this model; it wins over auto-detection, also on reload. */
   explicitConfig?: ModelConfig;
@@ -261,12 +263,15 @@ export function App() {
           await loopRef.current!.detach(i); // let the in-flight frame finish before freeing its GPU buffers
           await entry.runtime.release();
         }
-        const rt = await createRuntime(bytes, backend);
+        const identity = entry.sample ? new URL(entry.sample.url, new URL(MODELS_INDEX, location.href)).href : `file:${entry.name}`;
+        const checked = await createCheckedRuntime(bytes, backend, identity);
+        const rt = checked.runtime;
         const inferred = inferConfig(bytes, rt.input);
         const cfg = entry.explicitConfig ?? withOptions(inferred.config, entry.sample?.options);
         patchModel(i, {
           bytes,
           runtime: rt,
+          gpuVerification: checked.verification,
           config: cfg,
           configSource: entry.explicitConfig ? "config file" : inferred.source,
           decoderGuessed: !entry.explicitConfig && inferred.guessed,
@@ -327,6 +332,11 @@ export function App() {
   async function changeBackend(backend: BackendPreference) {
     setBackendPref(backend);
     for (const [i, m] of modelsRef.current.entries()) if (m.runtime) await loadModel(i, m.on, backend);
+  }
+
+  async function checkGpuAgain() {
+    clearGpuVerdicts();
+    await changeBackend(backendPref);
   }
 
   /** Adds a model file picked from disk to the list and turns it on. */
@@ -425,6 +435,7 @@ export function App() {
   }
 
   const active = models.filter((m) => m.on && m.runtime);
+  const gpuNotices = active.flatMap((m) => m.gpuVerification?.notice ? [`${active.length > 1 ? `${m.name}: ` : ""}${m.gpuVerification.notice}`] : []);
   // A decode error already gives the same advice, with the actual reason.
   const showGuessWarnings = !(error && error === decodeErrorText);
   const warnings = active.flatMap((m) => {
@@ -482,10 +493,11 @@ export function App() {
         </div>
       )}
       <main>
-        {(error || warnings.length > 0) && (
+        {(error || warnings.length > 0 || gpuNotices.length > 0) && (
           <div className="status" role="status">
             {error && <div className="err">{error}</div>}
             {warnings.map((w) => <div key={w} className="warn">{w}</div>)}
+            {gpuNotices.map((notice) => <p key={notice} className="gpu-notice hint warn">{notice}</p>)}
           </div>
         )}
         <div className="analysis-view">
@@ -556,6 +568,8 @@ export function App() {
                 <option value="wasm">WASM (CPU)</option>
               </select>
             </label>
+            <button className="small" disabled={loading} onClick={() => void checkGpuAgain()}>Check GPU again</button>
+            <p className="hint">Small models are checked against the CPU once per GPU and model. Large models, including particles, are not checked; choose WASM if results look wrong.</p>
             <p className="hint">Tick the models to run; they all run on the same frames. A model downloads the first time it is ticked.</p>
             {models.map((m, i) => (
               <label className="check" key={m.key}>
@@ -563,6 +577,7 @@ export function App() {
                 <span>
                   <b>{m.name}</b>
                   {m.loading ? " · loading…" : m.runtime && <> on <b className={m.runtime.backend}>{m.runtime.backend}</b></>}
+                  {!m.loading && m.runtime && <span className="gpu-verification"> · {m.gpuVerification?.label}</span>}
                   {modelPipelines[i] && <> · pipeline <b>{modelPipelines[i]!.name}</b></>}
                 </span>
               </label>

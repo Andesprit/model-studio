@@ -75,8 +75,13 @@ npm run dev:phone
 ```
 
 prints a `Network: https://<pc-ip>:5173` address. Open it on a phone on the same Wi-Fi and accept the
-certificate warning once. On some phones the GPU gives wrong results; if every detection looks wrong, set
-**Advanced → Backend** to **WASM (CPU)** (see [findings](docs/findings.md#phones-the-gpu-can-compute-wrong-results)).
+certificate warning once. On some phones the GPU gives wrong results. **Auto** checks small models
+(including the lamp and rig vortex) against the CPU on their first load. If they disagree, it uses the CPU,
+shows a notice above the video, and remembers the choice for that GPU and model. The large particle models
+are not checked because their CPU test is slow; if their detections look wrong, set **Advanced → Backend**
+to **WASM (CPU)**. Advanced shows each model's check status and offers **Check GPU again**. Explicit
+**WebGPU** keeps the GPU even after a mismatch, with a warning; explicit **WASM** skips the check.
+See [findings](docs/findings.md#phones-the-gpu-can-compute-wrong-results) for measurements and limits.
 
 ## Commands
 
