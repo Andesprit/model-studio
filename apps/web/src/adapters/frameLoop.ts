@@ -61,6 +61,7 @@ export class FrameLoop {
   /** A refresh was requested while busy; run once more when the current inference finishes. */
   private pending = false;
   private running = false;
+  private onResize = () => this.refresh();
   private handle = 0;
   private frameTimes: number[] = [];
 
@@ -141,6 +142,7 @@ export class FrameLoop {
     this.running = true;
     window.addEventListener("error", this.onRuntimeError);
     window.addEventListener("unhandledrejection", this.onRuntimeError);
+    window.addEventListener("resize", this.onResize);
     this.schedule();
   }
 
@@ -148,6 +150,7 @@ export class FrameLoop {
     this.running = false;
     window.removeEventListener("error", this.onRuntimeError);
     window.removeEventListener("unhandledrejection", this.onRuntimeError);
+    window.removeEventListener("resize", this.onResize);
     if (this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.handle);
     else cancelAnimationFrame(this.handle);
   }

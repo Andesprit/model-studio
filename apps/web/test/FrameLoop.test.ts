@@ -40,6 +40,20 @@ beforeEach(() => vi.stubGlobal("window", new EventTarget()));
 afterEach(() => { loops.splice(0).forEach((loop) => loop.stop()); vi.unstubAllGlobals(); });
 
 describe("model changes during inference", () => {
+  it("refreshes a paused frame after a window resize and removes the listener on stop", async () => {
+    const { loop } = setup();
+    const model = runtime();
+    loop.start();
+    loop.setModel(0, model, config);
+    await vi.waitFor(() => expect(model.run).toHaveBeenCalledTimes(1));
+    window.dispatchEvent(new Event("resize"));
+    await vi.waitFor(() => expect(model.run).toHaveBeenCalledTimes(2));
+    loop.stop();
+    window.dispatchEvent(new Event("resize"));
+    await Promise.resolve();
+    expect(model.run).toHaveBeenCalledTimes(2);
+  });
+
   it("drains the detached frame before creating a session and blocks refresh until setup finishes", async () => {
     const { loop } = setup();
     const frame = deferred<Record<string, never>>();

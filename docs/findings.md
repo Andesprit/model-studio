@@ -103,6 +103,31 @@ keep the same scale as the square model.
 
 ## Timings on the PC (GPU)
 
+Lamp fp16, measured in a visible Chrome window on 2026-10-17. Phone means a **390×844 viewport** on the PC;
+desktop is 1440×900, not a different device. The input is 232×416 grayscale. The 4K rows summarize 536
+orientation-locked frames in each 600-frame run, replaying the whole clip:
+
+| Lamp source and viewport | Prepare | Network | Decode, pipeline and draw | Analyzed fps |
+|---|---|---|---|---|
+| 2160×3840 video, phone | 5.0 ms | 30.2 ms | 3.2 ms | 17 |
+| 2160×3840 video, desktop | 5.2 ms | 30.4 ms | 3.3 ms | 18 |
+| 720×1280 fake camera, phone, short sample | 4.4 ms | 29.0 ms | 3.3 ms | 19 |
+| 720×1280 fake camera, desktop, short sample | 4.3 ms | 27.3 ms | 3.3 ms | 17 |
+
+Before GPU frame scaling, preparing the 4K input took 30.2–30.7 ms and the app analyzed about 14 fps.
+The first 100 frames with the smaller overlay had median prepare times of 5.2 ms (phone) and 5.3 ms
+(desktop); locked-frame p95 was 6.0 and 6.1 ms. A separate same-session comparison of the old and smaller
+overlays gave 17 fps with each, prepare 5.67 → 5.05 ms, and postprocessing 3.53 → 3.55 ms: the overlay's
+clear win is memory, with essentially unchanged postprocessing cost. The phone's 18 fps target is not
+consistently reached.
+
+Camera samples use the earlier three-second protocol after orientation locks. Longer fake-camera runs
+slowed to 5.4–6.4 ms prepare and 11–12 fps, with network time rising to about 60 ms. Alternating the old
+and smaller renderers in one camera session gave 5.47 / 5.48 ms prepare and 15 fps with both, so that
+long-run slowdown is also present with the old renderer. It is not evidence of a physical phone's speed.
+
+Earlier network-only measurements on other inputs:
+
 | Model | Input | Time per frame |
 |---|---|---|
 | Vortex fp32 | 416×160, grey | 45–100 ms |
@@ -254,8 +279,23 @@ that repo, in `docs/lamp_frames.md` and `docs/model_studio.md`. What matters her
   GPUs compute float16 natively, so WebGPU gains (1.2× here). WASM doesn't, and stays the same. Phone GPUs may
   gain more or less; compare the two entries on the phone. Once it's clear the fp16 entry is no worse there,
   the fp32 entry can go.
-- **Shrinking the frame onto the canvas costs more on large sources.** A 4K frame took about 28 ms during
-  playback. A 720p frame (the live camera's size) is about 10× cheaper to draw. Not measured on a phone yet.
+- **GPU scaling makes large sources cheaper to prepare.** The old HTML canvas used
+  `willReadFrequently: true`, putting the full-source copy and downscale on the CPU: about 30 ms for a 4K
+  phone video, even though the model only needs 232×416 pixels. For sources above one megapixel the app
+  now uses an OffscreenCanvas 2D without that flag, so the GPU can shrink the frame before the small
+  readback. Sources up to one megapixel, including the 720×1280 camera, retain the original CPU path;
+  browsers without OffscreenCanvas 2D also use that fallback. The padding, geometry and tensor conversion
+  are unchanged.
+  - On 600 consecutive displayed frames, grab plus tensor conversion had median 4.1 ms and p95 5.2 ms,
+    with no return to the slow path. In the app, preparing the 4K frame is about 5 ms; see the timing table.
+  - On 24 identical seek-stepped frames, old/new mask IoU averaged 0.9985 (minimum 0.9969). The normalized
+    input tensor's mean absolute difference was 0.000018; median thickness and area differences were both
+    under 0.02%. Default image smoothing was sufficient.
+  - The overlay also uses its displayed size times device pixel ratio (capped at 2× and two million
+    pixels), with drawing transformed from video coordinates. For the 4K clip its backing store fell
+    from 8,294,400 pixels to 256,880 on the phone view and 210,528 on desktop, about 97% fewer pixels.
+    Strokes and text retain their source-resolution scaling; calibration remains a separate SVG. Paused
+    video refreshes after a window resize. These numbers are from the PC, not a physical phone.
 - **Not tested yet:**
   - a phone;
   - a lamp video the model has never seen. All five lamp videos were used in training.
