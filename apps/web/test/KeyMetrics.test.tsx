@@ -3,6 +3,14 @@ import { describe, expect, it } from "vitest";
 import { KeyMetrics } from "../src/ui/KeyMetrics";
 
 describe("key measurements", () => {
+  it("shows placeholders without units", () => {
+    const html = renderToStaticMarkup(<KeyMetrics detections={0} metrics={{
+      "vortex thickness cm": "-", "vortex breathing Hz": "-", "particles mean speed cm/s": "-",
+    }} />);
+    expect(html).toContain("<dd>-</dd>");
+    expect(html).not.toContain("- cm");
+    expect(html).not.toContain("- Hz");
+  });
   it("keeps calibrated units and separates breathing amplitude from frequency", () => {
     const html = renderToStaticMarkup(<KeyMetrics detections={0} metrics={{
       "vortex orientation": "vertical",

@@ -9,6 +9,9 @@ import { CalibrationLine, lineLength, type Line } from "./ui/CalibrationLine";
 import { ConfigEditor, OptionField, SHOW_OPTIONS } from "./ui/ConfigEditor";
 import { KeyMetrics } from "./ui/KeyMetrics";
 import { FramingGuide, requestMotionPermission } from "./ui/FramingGuide";
+import { Sparkline } from "./ui/Sparkline";
+import { SummaryCard, type ModelSummary } from "./ui/SummaryCard";
+import { TrendBuffer } from "./ui/trend";
 
 interface Sample {
   name: string;
@@ -127,10 +130,29 @@ export function App() {
   const calibration = useMemo(() => makeCalibration(calPixels, calAmount, calUnit), [calPixels, calAmount, calUnit]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [error, setError] = useState("");
+  const trend = useRef(new TrendBuffer());
+  const [summaries, setSummaries] = useState<ModelSummary[]>([]);
+
+  function resetReadings() {
+    trend.current.clear();
+    setSummaries([]);
+  }
+
+  function readSummaries(): ModelSummary[] {
+    return modelsRef.current.flatMap((m, i) => {
+      const runner = modelRunners.current[i];
+      return m.on && m.runtime && runner ? [{ name: m.name, summary: runner.summary() }] : [];
+    });
+  }
 
   useEffect(() => {
     const p = new FrameLoop(videoRef.current!, overlayRef.current!, {
-      onStats: setStats,
+      onStats: (s) => {
+        trend.current.add(videoRef.current!.currentTime, s.metrics, s.detections);
+        setStats(s);
+        // Include a final inference that completes after the media's ended event.
+        if (videoRef.current!.ended) setSummaries(readSummaries());
+      },
       onError: (e) => {
         const text = `Inference error: ${errorMessage(e)}`;
         setError(text);
@@ -154,12 +176,14 @@ export function App() {
 
   // A new runner starts with fresh pipeline state.
   useEffect(() => {
+    resetReadings();
     runnerRef.current = pipeline ? new PipelineRunner(pipeline, pipelineOptions, calibration) : null;
     loopRef.current?.setPipeline(runnerRef.current);
   }, [pipeline, pipelineOptions, calibration]);
 
   // Each model's own pipeline gets a fresh runner whenever it or the calibration changes.
   useEffect(() => {
+    resetReadings();
     modelPipelines.forEach((def, slot) => {
       const runner = def ? new PipelineRunner(def, {}, calibration) : null;
       modelRunners.current[slot] = runner;
@@ -256,6 +280,7 @@ export function App() {
 
   /** Loads (downloading first if needed) the model in slot `i`. `on` says whether it starts switched on. */
   async function loadModel(i: number, on: boolean, backend = backendPref) {
+    resetReadings();
     const entry = modelsRef.current[i];
     patchModel(i, { loading: true });
     setError("");
@@ -294,6 +319,7 @@ export function App() {
 
   /** Switches a model on or off; one that isn't loaded yet is loaded (and downloaded) first. Unticking keeps it loaded. */
   async function toggleModel(i: number, on: boolean) {
+    resetReadings();
     setError("");
     const m = modelsRef.current[i];
     const modelFile = m.sample?.url.split("/").pop();
@@ -307,6 +333,7 @@ export function App() {
 
   /** A main-path choice runs only its model; Advanced can still combine any models. */
   function chooseTarget(next: Target) {
+    resetReadings();
     const file = TARGETS.find((t) => t.id === next)!.file;
     setTarget(next);
     rememberTarget(next);
@@ -390,6 +417,7 @@ export function App() {
   }
 
   function stopSource() {
+    resetReadings();
     loopRef.current?.resetPipeline();
     setStats(null);
     // A scale measured on one view doesn't apply to another.
@@ -520,7 +548,7 @@ export function App() {
             {gpuNotices.map((notice) => <p key={notice} className="gpu-notice hint warn">{notice}</p>)}
           </div>
         )}
-        <div className="analysis-view">
+        <div className={`analysis-view${summaries.length ? " finished" : ""}`}>
           <div className="stage" style={{ aspectRatio: aspect, maxWidth: `calc(var(--stage-height) * ${aspect})` }}>
             <video
               ref={videoRef}
@@ -531,6 +559,9 @@ export function App() {
               controls={source === "file"}
               onLoadedMetadata={readFrameSize}
               onResize={readFrameSize}
+              onEnded={() => { if (source === "file") setSummaries(readSummaries()); }}
+              onPlay={() => setSummaries([])}
+              onSeeking={() => setSummaries([])}
             />
             <canvas ref={overlayRef} />
             <CalibrationLine
@@ -549,11 +580,14 @@ export function App() {
               />}
             </div>
           </div>
-          {source && (stats && active.length > 0
-            ? <KeyMetrics metrics={stats.metrics} detections={stats.detections} showParticles={active.some((m) => m.config?.decoder === "yolo-detect")} />
-            : <p className="hint analysis-wait">{loading ? "Your analysis will appear when the model is ready." : "Waiting for the first analyzed frame..."}</p>)}
+          {source && <div className="analysis-readings">
+            {stats && active.length > 0
+              ? <KeyMetrics metrics={stats.metrics} detections={stats.detections} showParticles={active.some((m) => m.config?.decoder === "yolo-detect")} trend={<Sparkline buffer={trend.current} />} />
+              : <p className="hint analysis-wait">{loading ? "Your analysis will appear when the model is ready." : "Waiting for the first analyzed frame..."}</p>}
+            {summaries.length > 0 && <SummaryCard models={summaries} />}
+            <button className="download" onClick={downloadResults}>Download results (.json)</button>
+          </div>}
         </div>
-        {source && <button className="download" onClick={downloadResults}>Download results (.json)</button>}
         {stats && active.length > 0 && (
           <details className="diagnostics">
             <summary>All measurements and timing</summary>
