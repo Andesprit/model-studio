@@ -41,7 +41,7 @@ export class TrendBuffer {
 
 export function trendWindow(points: TrendPoint[]) {
   const span = points.length ? Math.min(10, points[points.length - 1].t - points[0].t) : 0;
-  return { span, label: `last ${span < 1 ? reading(span) : Math.round(span)} s` };
+  return { span, label: `last ${span < 1 ? "<1" : Math.round(span)} s` };
 }
 
 export function trendPath(points: TrendPoint[]): string {

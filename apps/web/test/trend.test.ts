@@ -10,10 +10,17 @@ describe("measurement trend", () => {
 
   it("labels a rolling camera window as ten seconds and handles a single point", () => {
     expect(trendWindow([{ t: 12.04, value: 1 }, { t: 22, value: 2 }]).label).toBe("last 10 s");
-    expect(trendWindow([{ t: 1, value: 2 }, { t: 1.25, value: 3 }]).label).toBe("last 0.25 s");
-    expect(trendWindow([])).toEqual({ span: 0, label: "last 0 s" });
     expect(trendPath([{ t: 1, value: 2 }])).toBe("M298.0,17.0");
     expect(trendPath([])).toBe("");
+  });
+
+  it("labels the first point and subsecond spans without rounding to zero seconds", () => {
+    expect(trendWindow([])).toEqual({ span: 0, label: "last <1 s" });
+    expect(trendWindow([{ t: 1, value: 2 }])).toEqual({ span: 0, label: "last <1 s" });
+    for (const span of [0.001, 0.25, 0.999]) {
+      expect(trendWindow([{ t: 0, value: 2 }, { t: span, value: 3 }])).toEqual({ span, label: "last <1 s" });
+    }
+    expect(trendWindow([{ t: 0, value: 2 }, { t: 1, value: 3 }]).label).toBe("last 1 s");
   });
 
   it("keeps ten seconds of distinct analyzed frames, not paused repeats", () => {
