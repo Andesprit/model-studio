@@ -12,7 +12,7 @@ There is also a **Vortex lamp** model for a desk vortex lamp filmed with a phone
 runs up and down or left to right, and takes the same measurements along the rope (see
 [how it works](docs/how-it-works.md#vortex-lamp-vortex-lamp-pipeline)).
 
-Both rig models run at the same time on the same frames. Everything runs on your computer (WebGPU on the GPU, or WASM
+You can run both rig models at the same time on the same frames. Everything runs on your computer (WebGPU on the GPU, or WASM
 on the CPU); nothing is uploaded. At the end, **Download results** saves everything that was measured as a
 JSON file.
 
@@ -38,26 +38,32 @@ Then:
 npm run dev
 ```
 
-and open http://localhost:5173. Both models load on their own, each with its analysis built in.
+and open http://localhost:5173. Choose a subject to download its model; nothing preloads.
 
 ## Using it
 
-1. **Model**: one checkbox per model (vortex, particles, particles + tracking, vortex lamp). Vortex and
-   particles are loaded on start; the others download when you tick them. For the lamp, untick the other two
-   and hold the phone upright with the lamp about 70 % of the frame's width
-   ([why](docs/findings.md#the-vortex-lamp-model)). Any ticked models run together, and each frame takes about
-   the sum of their times, so fewer models is faster.
-2. **Config**: how each model reads its input and output. Filled in from the model itself; you normally don't
-   touch it.
-3. **Pipeline**: optional. The models already bring their own; load a `.js` here only to run another
-   analysis on top of both.
-4. **Source**: **Video file** or **Camera**. Videos must be H.264 MP4 (see
-   [findings](docs/findings.md#video-formats)). The Source step has three one-click examples (Vortex, Particles, Both; in `apps/web/public/examples/`). More test videos are in `videos/`: `type-*` for the vortex model,
-   `bomba*` and `turbina*` (full frame, or one tube per `_tube_N` file) for the particle model.
-5. **Calibrate**: click **Calibrate**, drag a line over something of known length in the video, then enter
-   its length and unit. Sizes and speeds are then in that unit instead of pixels. The line can be moved,
-   resized or removed.
-6. **Results → Download results (.json)**: everything measured so far, with one section per model.
+1. Choose **Vortex lamp**, **Rig vortex** or **Particles**. Only that model downloads and runs.
+2. Tap **Camera** or **Video file**, even while the model is loading. The mask or detections and key
+   measurements appear together. Videos must be H.264 MP4 (see [findings](docs/findings.md#video-formats)).
+   For the lamp, hold the phone upright with the lamp about 70 % of the frame's width
+   ([why](docs/findings.md#the-vortex-lamp-model)). Rig vortex and Particles also offer **Try an example**;
+   the rig's Video 10 and 11 switch on both rig models. More test clips are in `videos/`.
+3. **Download results (.json)** saves everything measured, with one section per model.
+   **All measurements and timing** opens the full metric list, backend and per-frame costs.
+
+Open **Advanced** for the power tools:
+
+- **Models and backend**: every model remains a checkbox, including particles + tracking and the lamp's
+  fp32 comparison. Any combination can run together. A model downloads the first time it is enabled;
+  choosing a main target switches the others off. Fewer models is faster. **Load .onnx** opens a model
+  from disk and asks before running an embedded pipeline. **Backend** switches between Auto, WebGPU and WASM.
+- **Model config**: the decoder and **Config .json** for each loaded model. Normally these are inferred
+  from the model itself.
+- **Pipeline**: load or unload a `.js` analysis on top of all enabled models. Models with an embedded
+  pipeline already run it on their own.
+- **Calibration**: click **Calibrate**, drag a line over something of known length in the video, then
+  enter its length and unit. Sizes and speeds use that unit. The line can be moved, resized or removed;
+  changing the source clears it.
 
 What each measurement means is in [docs/how-it-works.md](docs/how-it-works.md#what-gets-measured), and it's
 also written into every results file.
@@ -70,7 +76,7 @@ npm run dev:phone
 
 prints a `Network: https://<pc-ip>:5173` address. Open it on a phone on the same Wi-Fi and accept the
 certificate warning once. On some phones the GPU gives wrong results; if every detection looks wrong, set
-**Backend** to **WASM (CPU)** (see [findings](docs/findings.md#phones-the-gpu-can-compute-wrong-results)).
+**Advanced → Backend** to **WASM (CPU)** (see [findings](docs/findings.md#phones-the-gpu-can-compute-wrong-results)).
 
 ## Commands
 
@@ -88,7 +94,7 @@ python scripts/embed_pipeline.py MODEL.onnx PIPELINE.js   # put a pipeline insid
 
 ```
 apps/web/              the app (React + Vite): UI, camera/video, onnxruntime-web, drawing
-  public/models/       the models the app loads, and index.json (the list it shows and preloads)
+  public/models/       models downloaded on demand, and index.json (the full selectable list)
 packages/core/         the logic, no browser code: config, preprocessing, decoders, pipelines, tracker
   test/                unit tests
 pipelines/             the analysis built into each model (vortex, particles, lamp): the source to edit

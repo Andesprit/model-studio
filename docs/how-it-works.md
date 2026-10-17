@@ -43,7 +43,7 @@ when a setting changes, but that frame isn't counted twice.
 The app needs three things to use an ONNX model: how to prepare the image for it, how to read its output,
 and (optionally) what to measure. It finds them in this order:
 
-1. **A config file** (step 2, `Config .json`), if you load one. An example is in
+1. **A config file** (**Advanced → Model config → Config .json**), if you load one. An example is in
    `examples/semantic-seg.example.json`.
 2. **Metadata inside the `.onnx`**:
    - a **detector-app manifest** (key `detector.manifest`, written by detector-app's `embed_manifest.py`).
@@ -68,8 +68,10 @@ what to try.
 
 ### The model list
 
-`apps/web/public/models/index.json` is the list the app shows under **Change model**, and the first two
-entries are loaded on startup. An entry can carry recommended decoder options; the particle model's are
+`apps/web/public/models/index.json` is the full list shown in **Advanced → Models and backend**. No model
+loads on startup. Choosing **Vortex lamp**, **Rig vortex** or **Particles** downloads only that target's
+model and switches the others off. Advanced checkboxes can enable any combination, downloading each
+model only the first time it is selected. An entry can carry recommended decoder options; the particle model's are
 from its training notes (confidence 0.20, overlap 0.35, up to 1000 detections, since the default 300 cuts
 off dense frames).
 
@@ -88,7 +90,7 @@ can carry its own **inside the `.onnx`** (metadata key `model-studio.pipeline`),
 Each model's pipeline runs on that model's output only. A model opened from disk asks before running its
 pipeline, since that's code; the app's own models don't ask.
 
-Step 3 can load one more pipeline that runs on **both** models' results together (for analyses that relate
+**Advanced → Pipeline** can load one more pipeline that runs on **both** models' results together (for analyses that relate
 them, like "particles inside the vortex"). Writing and embedding pipelines is in [pipelines.md](pipelines.md).
 
 ## Calibration
@@ -173,7 +175,7 @@ seen, sightings, mean and max speed, net velocity along and across the frame, pa
 
 ## The results file
 
-**Download results** (bottom of the panel) saves one JSON:
+**Download results** (under the analysis) saves one JSON:
 
 ```
 {
