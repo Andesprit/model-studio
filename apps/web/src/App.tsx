@@ -5,6 +5,7 @@ import { createRuntime, errorMessage, webgpuSupported, type BackendPreference, t
 import { checkInputShape, downloadJson, inferConfig, loadConfigFile, loadPipeline, loadPipelineSource } from "./loaders";
 import { CalibrationLine, lineLength, type Line } from "./ui/CalibrationLine";
 import { ConfigEditor, OptionField, SHOW_OPTIONS } from "./ui/ConfigEditor";
+import { KeyMetrics } from "./ui/KeyMetrics";
 
 interface Sample {
   name: string;
@@ -23,11 +24,16 @@ type Source = "camera" | "file" | null;
 /** The list of downloadable models; each entry's `url` is resolved against this file's location. */
 const MODELS_INDEX = `${import.meta.env.BASE_URL}models/index.json`;
 
-/** Sample models loaded on startup as model A and model B. */
+/** Main-path targets; the full downloadable list remains available in Advanced. */
 const VORTEX = "vortex_detector_fp32_with_pipeline.onnx";
 const PARTICLES = "particle_detector.onnx";
 const PARTICLES_TRACKING = "particle_detector_with_tracking.onnx";
-const PRELOAD = [VORTEX, PARTICLES];
+const TARGETS = [
+  { id: "lamp", name: "Vortex lamp", file: "vortex_lamp_auto_fp16.onnx" },
+  { id: "vortex", name: "Rig vortex", file: VORTEX },
+  { id: "particles", name: "Particles", file: PARTICLES },
+] as const;
+type Target = typeof TARGETS[number]["id"];
 
 type ExampleModel = "vortex" | "particles" | "both";
 
@@ -91,6 +97,7 @@ export function App() {
   const streamRef = useRef<MediaStream | null>(null);
 
   const [source, setSource] = useState<Source>(null);
+  const [target, setTarget] = useState<Target | null>(null);
   const [sourceName, setSourceName] = useState("");
   const [aspect, setAspect] = useState(16 / 9);
   const [backendPref, setBackendPref] = useState<BackendPreference>("auto");
@@ -101,7 +108,7 @@ export function App() {
   const loading = models.some((m) => m.loading);
   /** Text of the last decoder failure; while it's the error shown, it already explains what to do. */
   const [decodeErrorText, setDecodeErrorText] = useState("");
-  const preloadStarted = useRef(false);
+  const modelListLoaded = useRef(false);
   /** Pipelines embedded in each slot's model; each runs on that model's output only. */
   const [modelPipelines, setModelPipelines] = useState<(PipelineDefinition | null)[]>([]);
   const modelRunners = useRef<(PipelineRunner | null)[]>([]);
@@ -133,16 +140,9 @@ export function App() {
       .catch(() => [])
       .then((list: Sample[]) => {
         // The ref keeps React's dev double-mount from loading twice.
-        if (preloadStarted.current) return;
-        preloadStarted.current = true;
+        if (modelListLoaded.current) return;
+        modelListLoaded.current = true;
         updateModels(() => list.map((sample) => ({ key: sample.url, name: sample.name, sample, configSource: "", decoderGuessed: false, on: false, loading: false, trusted: true })));
-        // Start with the vortex and particle models loaded and on; the rest download when ticked.
-        void (async () => {
-          for (const file of PRELOAD) {
-            const i = list.findIndex((x) => x.url.split("/").pop() === file);
-            if (i >= 0) await toggleModel(i, true);
-          }
-        })();
       });
     return () => p.stop();
   }, []);
@@ -162,7 +162,7 @@ export function App() {
     });
   }, [modelPipelines, calibration]);
 
-  const anyPipeline = !!pipeline || modelPipelines.some(Boolean);
+  const anyPipeline = !!pipeline || modelPipelines.some((def, i) => !!def && models[i]?.on);
 
   /** Saves what the pipelines measured, plus what it was measured on, as one .json file with a section per model. */
   function downloadResults() {
@@ -295,6 +295,32 @@ export function App() {
     loopRef.current!.setModel(i, on && m.runtime ? m.runtime : null, on && m.config ? m.config : null);
   }
 
+  /** A main-path choice runs only its model; Advanced can still combine any models. */
+  function chooseTarget(next: Target) {
+    const file = TARGETS.find((t) => t.id === next)!.file;
+    setTarget(next);
+    setStats(null);
+    loopRef.current?.resetPipeline();
+    modelsRef.current.forEach((m, i) => {
+      const want = m.sample?.url.split("/").pop() === file;
+      if (m.on !== want) void toggleModel(i, want);
+    });
+    loopRef.current?.refresh();
+  }
+
+  function chooseExample(example: ExampleVideo) {
+    setStats(null);
+    const needsVortex = example.models === "vortex" || example.models === "both";
+    const needsParticles = example.models === "particles" || example.models === "both";
+    modelsRef.current.forEach((m, i) => {
+      const file = m.sample?.url.split("/").pop();
+      const want = file === VORTEX ? needsVortex
+        : file === PARTICLES || file === PARTICLES_TRACKING ? needsParticles && file === particleModelPreference.current : false;
+      if (m.sample && m.on !== want) void toggleModel(i, want);
+    });
+    void startVideo(example.src, example.label);
+  }
+
   /** Switches backend and reloads the loaded models on it, keeping each one on or off as it was. */
   async function changeBackend(backend: BackendPreference) {
     setBackendPref(backend);
@@ -303,6 +329,8 @@ export function App() {
 
   /** Adds a model file picked from disk to the list and turns it on. */
   async function addModelFile(file: File) {
+    setTarget(null);
+    setStats(null);
     const bytes = new Uint8Array(await file.arrayBuffer());
     const i = modelsRef.current.length;
     updateModels((ms) => [...ms, { key: `file:${i}:${file.name}`, name: file.name, bytes, configSource: "", decoderGuessed: false, on: false, loading: false, trusted: false }]);
@@ -338,6 +366,7 @@ export function App() {
 
   function stopSource() {
     loopRef.current?.resetPipeline();
+    setStats(null);
     // A scale measured on one view doesn't apply to another.
     setCalLine(null);
     setDrawingLine(false);
@@ -353,10 +382,11 @@ export function App() {
     stopSource();
     setError("");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
+      // Keep a portrait camera's full frame instead of cropping it to the preferred landscape size.
+      const video: MediaTrackConstraints & { resizeMode: string } = {
+        facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 }, resizeMode: "none",
+      };
+      const stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
       streamRef.current = stream;
       videoRef.current!.srcObject = stream;
       await videoRef.current!.play();
@@ -409,232 +439,228 @@ export function App() {
     return out;
   });
 
+  const hasSelection = !!target || active.length > 0 || loading;
+  const examples = EXAMPLE_VIDEOS.filter((x) => target === "vortex" ? x.models !== "particles" : target === "particles" && x.models === "particles");
+
+  function readFrameSize() {
+    const { videoWidth: width, videoHeight: height } = videoRef.current!;
+    if (!width || !height) return;
+    setAspect(width / height);
+    setFrameSize({ width, height });
+  }
+
   return (
     <div className="app">
-      <aside>
-        <h1>Detect</h1>
-
-        <section>
-          <h2>1. Model</h2>
-          <label className="field">
-            <span>Backend</span>
-            <select value={backendPref} disabled={loading} onChange={(e) => void changeBackend(e.target.value as BackendPreference)}>
-              <option value="auto">Auto (WebGPU → WASM)</option>
-              <option value="webgpu" disabled={!webgpuSupported()}>
-                WebGPU{webgpuSupported() ? "" : " (unavailable)"}
-              </option>
-              <option value="wasm">WASM (CPU)</option>
-            </select>
-          </label>
-          <p className="hint">Tick the models to run; they all run on the same frames. A model downloads the first time it is ticked.</p>
-          {models.map((m, i) => (
-            <label className="check" key={m.key}>
-              <input type="checkbox" checked={m.on} disabled={loading} onChange={(e) => void toggleModel(i, e.target.checked)} />
-              <span>
-                <b>{m.name}</b>
-                {m.loading ? " · loading…" : m.runtime && <> on <b className={m.runtime.backend}>{m.runtime.backend}</b></>}
-                {modelPipelines[i] && <> · pipeline <b>{modelPipelines[i]!.name}</b></>}
-              </span>
-            </label>
-          ))}
-          <FileButton label="Load .onnx" accept=".onnx" onFile={addModelFile} disabled={loading} small />
-        </section>
-
-        <section>
-          <h2>2. Config</h2>
-          {models.map(
-            (m, i) =>
-              m.runtime &&
-              m.config && (
-                <div key={m.key}>
-                  {models.filter((x) => x.runtime).length > 1 && <h3>{m.name}</h3>}
-                  <p className="hint">Config from {m.configSource}</p>
-                  <FileButton label="Config .json" accept=".json,application/json" onFile={(f) => void onConfigFile(i, f)} small />
-                  {m.explicitConfig && (
-                    <button className="link" onClick={() => patchModel(i, { explicitConfig: undefined })}>
-                      Forget config file (auto-detect on next model load)
-                    </button>
-                  )}
-                  <ConfigEditor config={m.config} decoderFromPipeline={pipeline?.decode ? pipeline.name : undefined} onChange={(c) => editConfig(i, c)} />
-                </div>
-              ),
-          )}
-          {!models.some((m) => m.runtime) && <p className="hint">Tick a model to configure it.</p>}
-        </section>
-
-        <section>
-          <h2>3. Pipeline</h2>
+      <header>
+        <h1>Model Studio</h1>
+        <p className="hint">Choose what you are looking at. Everything runs on your device.</p>
+      </header>
+      <div className="target-picker" role="group" aria-label="What are you looking at?">
+        {TARGETS.map((t) => (
+          <button key={t.id} aria-pressed={target === t.id} disabled={!models.length || loading} onClick={() => chooseTarget(t.id)}>
+            {t.name}
+          </button>
+        ))}
+      </div>
+      {hasSelection && (
+        <div className="source-bar">
           <div className="row">
-            <FileButton label="Pipeline .js" accept=".js,.mjs,text/javascript" onFile={onPipelineFile} small />
-            {pipeline && (
-              <button className="small" onClick={unloadPipeline}>
-                Unload
-              </button>
-            )}
-          </div>
-          {pipeline ? (
-            <p className="hint">
-              <b>{pipeline.name}</b>: {[pipeline.decode && "decoder", pipeline.create && "post-processing"].filter(Boolean).join(" + ")}
-            </p>
-          ) : (
-            <p className="hint">
-              {modelPipelines.some(Boolean)
-                ? "Models with an embedded pipeline run it on their own. Load one here to run another on all models together."
-                : "Optional. Your own decoder and/or logic across frames (tracking, counting…)."}
-            </p>
-          )}
-          {SHOW_OPTIONS &&
-            pipeline &&
-            Object.entries({ ...pipeline.defaults, ...pipelineOptions }).map(([key, value]) => (
-              <OptionField
-                key={`${pipeline.name}.${key}`}
-                name={key}
-                value={value}
-                range={pipeline.ranges?.[key]}
-                onChange={(v) => setPipelineOptions((o) => ({ ...o, [key]: v }))}
-              />
-            ))}
-        </section>
-
-        <section>
-          <h2>4. Source</h2>
-          <div className="row">
-            <button onClick={startCamera} className={source === "camera" ? "active" : ""}>
-              Camera
-            </button>
+            <button onClick={startCamera} className={source === "camera" ? "active" : ""}>Camera</button>
             <FileButton label="Video file" accept="video/*" onFile={startVideoFile} active={source === "file"} />
           </div>
-          <p className="hint">Or try an example:</p>
-          <div className="samples">
-            {EXAMPLE_VIDEOS.map((x) => (
-              <button key={x.file} title={x.file} aria-label={`${x.label}: ${x.file}`} onClick={() => {
-                  const needsVortex = x.models === "vortex" || x.models === "both";
-                  const needsParticles = x.models === "particles" || x.models === "both";
-                  models.forEach((m, i) => {
-                    const modelFile = m.sample?.url.split("/").pop();
-                    const want = modelFile === VORTEX
-                      ? needsVortex
-                      : modelFile === PARTICLES || modelFile === PARTICLES_TRACKING
-                        ? needsParticles && modelFile === particleModelPreference.current
-                        : false;
-                    if (m.sample && m.on !== want) void toggleModel(i, want);
-                  });
-                  void startVideo(x.src, x.label);
-                }}>
-                {x.label}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section>
-          <h2>5. Calibrate</h2>
-          <div className="row">
-            <label className="field">
-              <span>Pixels</span>
-              <input value={calPixels ? calPixels.toFixed(1) : ""} readOnly placeholder="draw a line" />
-            </label>
-            <label className="field">
-              <span>Amount</span>
-              <input type="number" min={0} step="any" value={calAmount || ""} onChange={(e) => setCalAmount(Number(e.target.value))} />
-            </label>
-            <label className="field">
-              <span>Unit</span>
-              <select value={calUnit} onChange={(e) => setCalUnit(e.target.value)}>
-                {UNITS.map(([value, name]) => (
-                  <option key={value} value={value}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="row">
-            <button className={drawingLine ? "active" : ""} disabled={!source} onClick={() => setDrawingLine((d) => !d)}>
-              {drawingLine ? "Drag on the video…" : calLine ? "Redraw line" : "Calibrate"}
-            </button>
-            {calLine && <button onClick={() => setCalLine(null)}>Remove line</button>}
-          </div>
-          {calLine && !drawingLine && <p className="hint">Drag the ends to resize the line, or the line itself to move it.</p>}
-          {calibration && (
-            <p className="hint">
-              1 px = {calibration.unitsPerPixel.toPrecision(3)} {calibration.unit}
-            </p>
+          {target === "lamp" && !source && <p className="hint">Hold the phone upright, with the lamp filling about 70% of the frame width.</p>}
+          {examples.length > 0 && (
+            <details className="examples">
+              <summary>Try an example</summary>
+              <div className="samples">
+                {examples.map((x) => <button key={x.file} disabled={loading} title={x.file} aria-label={`${x.label}: ${x.file}`} onClick={() => chooseExample(x)}>{x.label}</button>)}
+              </div>
+            </details>
           )}
-        </section>
-
-        {anyPipeline && (
-          <section>
-            <h2>Results</h2>
-            <button disabled={!source} onClick={downloadResults}>
-              Download results (.json)
-            </button>
-            <p className="hint">Everything the pipelines measured so far, with a section per model.</p>
-          </section>
-        )}
-      </aside>
-
+        </div>
+      )}
       <main>
         {(error || warnings.length > 0) && (
-          <div className="status">
+          <div className="status" role="status">
             {error && <div className="err">{error}</div>}
-            {warnings.map((w) => (
-              <div key={w} className="warn">
-                {w}
-              </div>
-            ))}
+            {warnings.map((w) => <div key={w} className="warn">{w}</div>)}
           </div>
         )}
-        <div className="stage" style={{ aspectRatio: aspect }}>
-          <video
-            ref={videoRef}
-            muted
-            playsInline
-            // With a pipeline the video plays once, so its results cover the whole video
-            // (a loop would restart the measurements).
-            loop={!pipeline}
-            controls={source === "file"}
-            onLoadedMetadata={(e) => {
-              const { videoWidth: width, videoHeight: height } = e.currentTarget;
-              setAspect(width / height || 16 / 9);
-              setFrameSize({ width, height });
-            }}
-          />
-          <canvas ref={overlayRef} />
-          <CalibrationLine
-            width={frameSize.width}
-            height={frameSize.height}
-            line={calLine}
-            drawing={drawingLine}
-            onLine={(l) => {
-              setCalLine(l);
-              setDrawingLine(false);
-            }}
-          />
-          {!source && <div className="placeholder">Load a model, then pick a camera or video file.</div>}
-        </div>
-        {stats && active.length > 0 && (
-          <div className="stats">
-            <span>{stats.fps} fps</span>
-            <span>pre {stats.preMs.toFixed(1)} ms</span>
-            <span>
-              infer{" "}
-              {stats.inferByModel.length > 1
-                ? stats.inferByModel.map((ms, i) => `${active[i]?.name ?? modelKey(i)} ${ms.toFixed(1)}`).join(" · ")
-                : stats.inferMs.toFixed(1)}{" "}
-              ms
-            </span>
-            <span>post {stats.postMs.toFixed(1)} ms</span>
-            <span>{stats.detections} results</span>
-            <span>{active[0].runtime!.backend}</span>
-            {Object.entries(stats.metrics ?? {}).map(([k, v]) => (
-              <span key={k} className="metric">
-                {k}: <b>{v}</b>
-              </span>
-            ))}
+        <div className="analysis-view">
+          <div className="stage" style={{ aspectRatio: aspect, maxWidth: `calc(var(--stage-height) * ${aspect})` }}>
+            <video
+              ref={videoRef}
+              muted
+              playsInline
+              // Pipelines measure a single pass; looping would restart their measurements.
+              loop={!anyPipeline}
+              controls={source === "file"}
+              onLoadedMetadata={readFrameSize}
+              onResize={readFrameSize}
+            />
+            <canvas ref={overlayRef} />
+            <CalibrationLine
+              width={frameSize.width}
+              height={frameSize.height}
+              line={calLine}
+              drawing={drawingLine}
+              onLine={(l) => { setCalLine(l); setDrawingLine(false); }}
+            />
+            {!source && <div className="placeholder">{hasSelection ? "Choose Camera or Video file to see the analysis." : "Start by choosing a subject above."}</div>}
+            {loading && <div className="loading-status" role="status">Loading {models.filter((m) => m.loading).map((m) => m.name).join(", ")}...</div>}
           </div>
+          {source && (stats && active.length > 0
+            ? <KeyMetrics metrics={stats.metrics} detections={stats.detections} showParticles={active.some((m) => m.config?.decoder === "yolo-detect")} />
+            : <p className="hint analysis-wait">{loading ? "Your analysis will appear when the model is ready." : "Waiting for the first analyzed frame..."}</p>)}
+        </div>
+        {source && <button className="download" onClick={downloadResults}>Download results (.json)</button>}
+        {stats && active.length > 0 && (
+          <details className="diagnostics">
+            <summary>All measurements and timing</summary>
+            <div className="stats">
+              <span>{stats.fps} fps</span>
+              <span>pre {stats.preMs.toFixed(1)} ms</span>
+              <span>
+                infer{" "}
+                {stats.inferByModel.length > 1
+                  ? stats.inferByModel.map((ms, i) => `${active[i]?.name ?? modelKey(i)} ${ms.toFixed(1)}`).join(" · ")
+                  : stats.inferMs.toFixed(1)}{" "}
+                ms
+              </span>
+              <span>post {stats.postMs.toFixed(1)} ms</span>
+              <span>{stats.detections} results</span>
+              <span>{active[0].runtime!.backend}</span>
+              {Object.entries(stats.metrics ?? {}).map(([k, v]) => (
+                <span key={k} className="metric">
+                  {k}: <b>{v}</b>
+                </span>
+              ))}
+            </div>
+          </details>
         )}
       </main>
+      <details className="advanced">
+        <summary>Advanced</summary>
+        <div className="advanced-grid">
+          <section>
+            <h2>Models and backend</h2>
+            <label className="field">
+              <span>Backend</span>
+              <select value={backendPref} disabled={loading} onChange={(e) => void changeBackend(e.target.value as BackendPreference)}>
+                <option value="auto">Auto (WebGPU → WASM)</option>
+                <option value="webgpu" disabled={!webgpuSupported()}>
+                  WebGPU{webgpuSupported() ? "" : " (unavailable)"}
+                </option>
+                <option value="wasm">WASM (CPU)</option>
+              </select>
+            </label>
+            <p className="hint">Tick the models to run; they all run on the same frames. A model downloads the first time it is ticked.</p>
+            {models.map((m, i) => (
+              <label className="check" key={m.key}>
+                <input type="checkbox" checked={m.on} disabled={loading} onChange={(e) => { setTarget(null); setStats(null); void toggleModel(i, e.target.checked); }} />
+                <span>
+                  <b>{m.name}</b>
+                  {m.loading ? " · loading…" : m.runtime && <> on <b className={m.runtime.backend}>{m.runtime.backend}</b></>}
+                  {modelPipelines[i] && <> · pipeline <b>{modelPipelines[i]!.name}</b></>}
+                </span>
+              </label>
+            ))}
+            <FileButton label="Load .onnx" accept=".onnx" onFile={addModelFile} disabled={loading} small />
+          </section>
+
+          <section>
+            <h2>Model config</h2>
+            {models.map(
+              (m, i) =>
+                m.runtime &&
+                m.config && (
+                  <div key={m.key}>
+                    {models.filter((x) => x.runtime).length > 1 && <h3>{m.name}</h3>}
+                    <p className="hint">Config from {m.configSource}</p>
+                    <FileButton label="Config .json" accept=".json,application/json" onFile={(f) => void onConfigFile(i, f)} small />
+                    {m.explicitConfig && (
+                      <button className="link" onClick={() => patchModel(i, { explicitConfig: undefined })}>
+                        Forget config file (auto-detect on next model load)
+                      </button>
+                    )}
+                    <ConfigEditor config={m.config} decoderFromPipeline={pipeline?.decode ? pipeline.name : undefined} onChange={(c) => editConfig(i, c)} />
+                  </div>
+                ),
+            )}
+            {!models.some((m) => m.runtime) && <p className="hint">Tick a model to configure it.</p>}
+          </section>
+
+          <section>
+            <h2>Pipeline</h2>
+            <div className="row">
+              <FileButton label="Pipeline .js" accept=".js,.mjs,text/javascript" onFile={onPipelineFile} small />
+              {pipeline && (
+                <button className="small" onClick={unloadPipeline}>
+                  Unload
+                </button>
+              )}
+            </div>
+            {pipeline ? (
+              <p className="hint">
+                <b>{pipeline.name}</b>: {[pipeline.decode && "decoder", pipeline.create && "post-processing"].filter(Boolean).join(" + ")}
+              </p>
+            ) : (
+              <p className="hint">
+                {modelPipelines.some(Boolean)
+                  ? "Models with an embedded pipeline run it on their own. Load one here to run another on all models together."
+                  : "Optional. Your own decoder and/or logic across frames (tracking, counting…)."}
+              </p>
+            )}
+            {SHOW_OPTIONS &&
+              pipeline &&
+              Object.entries({ ...pipeline.defaults, ...pipelineOptions }).map(([key, value]) => (
+                <OptionField
+                  key={`${pipeline.name}.${key}`}
+                  name={key}
+                  value={value}
+                  range={pipeline.ranges?.[key]}
+                  onChange={(v) => setPipelineOptions((o) => ({ ...o, [key]: v }))}
+                />
+              ))}
+          </section>
+
+          <section>
+            <h2>Calibration</h2>
+            <div className="row">
+              <label className="field">
+                <span>Pixels</span>
+                <input value={calPixels ? calPixels.toFixed(1) : ""} readOnly placeholder="draw a line" />
+              </label>
+              <label className="field">
+                <span>Amount</span>
+                <input type="number" min={0} step="any" value={calAmount || ""} onChange={(e) => setCalAmount(Number(e.target.value))} />
+              </label>
+              <label className="field">
+                <span>Unit</span>
+                <select value={calUnit} onChange={(e) => setCalUnit(e.target.value)}>
+                  {UNITS.map(([value, name]) => (
+                    <option key={value} value={value}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="row">
+              <button className={drawingLine ? "active" : ""} disabled={!source} onClick={() => setDrawingLine((d) => !d)}>
+                {drawingLine ? "Drag on the video…" : calLine ? "Redraw line" : "Calibrate"}
+              </button>
+              {calLine && <button onClick={() => setCalLine(null)}>Remove line</button>}
+            </div>
+            {calLine && !drawingLine && <p className="hint">Drag the ends to resize the line, or the line itself to move it.</p>}
+            {calibration && (
+              <p className="hint">
+                1 px = {calibration.unitsPerPixel.toPrecision(3)} {calibration.unit}
+              </p>
+            )}
+          </section>
+        </div>
+      </details>
     </div>
   );
 }

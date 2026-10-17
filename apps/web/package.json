@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "vitest run",
     "dev": "vite",
     "dev:phone": "vite --mode phone",
     "build": "tsc -p . && vite build",
@@ -20,6 +21,7 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
     "@vitejs/plugin-react": "^5.1.0",
-    "vite": "^7.2.0"
+    "vite": "^7.2.0",
+    "vitest": "^4.0.4"
   }
 }
