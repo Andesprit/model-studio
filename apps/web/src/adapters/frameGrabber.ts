@@ -2,8 +2,21 @@ import { computeTransform, PAD_VALUE, type Frame, type InputConfig, type Transfo
 
 /** Uses the browser's native canvas scaling to place a video frame onto the model input canvas. */
 export class FrameGrabber {
-  private canvas = document.createElement("canvas");
-  private ctx = this.canvas.getContext("2d", { willReadFrequently: true })!;
+  private canvas: OffscreenCanvas | HTMLCanvasElement;
+  private ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
+
+  constructor() {
+    // Let the GPU shrink large sources before reading back only the model-sized pixels.
+    const canvas = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(1, 1) : null;
+    const ctx = canvas?.getContext("2d");
+    if (canvas && ctx) {
+      this.canvas = canvas;
+      this.ctx = ctx;
+    } else {
+      this.canvas = document.createElement("canvas");
+      this.ctx = this.canvas.getContext("2d", { willReadFrequently: true })!;
+    }
+  }
 
   grab(source: HTMLVideoElement, input: InputConfig): { frame: Frame; transform: Transform } {
     const sw = source.videoWidth;
