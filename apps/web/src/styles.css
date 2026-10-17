@@ -117,3 +117,18 @@ em.err { font-style: normal; }
   .key-metrics dd { font-size: 14px; }
   .advanced-grid { grid-template-columns: 1fr; gap: 8px; }
 }
+@media (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
+  .app { display: grid; grid-template-columns: 3fr 2fr; padding: 8px 16px; gap: 8px; }
+  .app > header, .app > main, .app > .advanced { grid-column: 1 / -1; }
+  .app > header h1 { font-size: 18px; margin: 0; }
+  .app > header .hint { display: none; }
+  .target-picker { gap: 6px; align-self: start; }
+  .source-bar .row { max-width: none; }
+  .target-picker button, .source-bar .row > * { min-height: 40px; padding: 6px; }
+  .analysis-view, .analysis-view.finished { --stage-height: calc(100dvh - 124px); display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 12px; }
+  .key-metrics { padding: 10px 12px; gap: 4px; }
+  .key-metrics h2 { margin: 0; }
+  .key-metrics dl { gap: 6px; }
+  .key-metrics dd { font-size: 14px; }
+  .reading-actions > * { min-height: 40px; }
+}
