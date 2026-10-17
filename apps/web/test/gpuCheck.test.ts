@@ -38,6 +38,15 @@ describe("GPU output agreement", () => {
     expect(gpuOutputsAgree(output([1e-8, -1e-8]), output([0, 0]))).toBe(true);
   });
 
+  it("accepts a few border cells that flip around the lamp's -10000 outside-water marker", () => {
+    // 1000 cells: mostly marker, a water region of logits, and 3 border cells marked on one side only
+    const cpu = Array.from({ length: 1000 }, (_, i) => (i < 600 ? -10000 : -4 + (i % 7)));
+    const gpu = cpu.map((v, i) => (i === 600 || i === 601 ? -10000 : i === 599 ? -3.5 : v + 0.01));
+    expect(gpuOutputsAgree(output(gpu), output(cpu))).toBe(true);
+    // a GPU that loses the marker everywhere is still a fault
+    expect(gpuOutputsAgree(output(cpu.map((v) => (v === -10000 ? 2 : v))), output(cpu))).toBe(false);
+  });
+
   it("rejects offsets even when correlation and sign agree, and checks every output", () => {
     expect(gpuOutputsAgree(output([6, 7, 8]), output([1, 2, 3]))).toBe(false);
     expect(gpuOutputsAgree({ ...output(), other: tensor([0]) }, { ...output(), other: tensor([1]) })).toBe(false);

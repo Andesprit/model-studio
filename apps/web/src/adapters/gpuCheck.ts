@@ -7,6 +7,13 @@ import { createSessionRuntime } from "./ortSession";
 // Local output comparisons: healthy scaled RMS <=0.0129, simulated faults >=0.2225.
 // Calibrated on one Intel GPU; this is a gross-error check, not proof of GPU correctness.
 const GPU_ERROR_THRESHOLD = 0.05;
+// Outputs are clamped to +-OUTPUT_CLAMP (beyond it a logit or score is certain either way), and the RMS leaves out the
+// largest TRIM_FRACTION of differences. A segmentation's border cells can round to different sides on a healthy GPU;
+// with a sentinel value (the lamp model marks cells outside the water with -10000) each such cell is a huge error,
+// and a handful of them judged a healthy GPU faulty. Real faults corrupt most of the output, so they still fail.
+// Outputs under 1 / TRIM_FRACTION values are compared whole.
+const OUTPUT_CLAMP = 30;
+const TRIM_FRACTION = 0.01;
 const MAX_CHECK_BYTES = 3_000_000;
 const STORAGE_PREFIX = "model-studio.gpu-check.v1:";
 type Verdict = "ok" | "cpu";
@@ -24,13 +31,19 @@ export function gpuOutputsAgree(actual: Record<string, Tensor>, reference: Recor
     const a = actual[name], b = reference[name];
     if (!a || a.dims.length !== b.dims.length || a.dims.some((d, i) => d !== b.dims[i])) return false;
     if (!b.data.length || a.data.length !== b.data.length || b.dims.reduce((n, d) => n * d, 1) !== b.data.length) return false;
-    let sum = 0;
+    const squared = new Float64Array(b.data.length);
     for (let i = 0; i < b.data.length; i++) {
       if (!Number.isFinite(a.data[i]) || !Number.isFinite(b.data[i])) return false;
-      const delta = (a.data[i] - b.data[i]) / Math.max(1, Math.abs(b.data[i]));
-      sum += delta * delta;
+      const ai = Math.max(-OUTPUT_CLAMP, Math.min(OUTPUT_CLAMP, a.data[i]));
+      const bi = Math.max(-OUTPUT_CLAMP, Math.min(OUTPUT_CLAMP, b.data[i]));
+      const delta = (ai - bi) / Math.max(1, Math.abs(bi));
+      squared[i] = delta * delta;
     }
-    return Math.sqrt(sum / b.data.length) <= GPU_ERROR_THRESHOLD;
+    squared.sort();
+    const kept = squared.length - Math.floor(squared.length * TRIM_FRACTION);
+    let sum = 0;
+    for (let i = 0; i < kept; i++) sum += squared[i];
+    return Math.sqrt(sum / kept) <= GPU_ERROR_THRESHOLD;
   });
 }
 
