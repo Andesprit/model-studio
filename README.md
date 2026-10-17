@@ -38,11 +38,15 @@ Then:
 npm run dev
 ```
 
-and open http://localhost:5173. Choose a subject to download its model; nothing preloads.
+and open http://localhost:5173. Choose a subject to download its model; a fresh visit downloads no model.
 
 ## Using it
 
 1. Choose **Vortex lamp**, **Rig vortex** or **Particles**. Only that model downloads and runs.
+   Your subject is remembered for the next visit. Lamp and rig models start loading on return;
+   the 39 MB particle model waits until you start a source or tap **Particles** again.
+   Share the current address to preselect the subject for someone else, or add
+   `?target=lamp`, `?target=vortex` or `?target=particles` to the page URL.
 2. Tap **Camera** or **Video file**, even while the model is loading. The mask or detections and key
    measurements appear together. Videos must be H.264 MP4 (see [findings](docs/findings.md#video-formats)).
    For the lamp, hold the phone upright with the lamp about 70 % of the frame's width
