@@ -60,6 +60,8 @@ export class FrameLoop {
   private halted = false;
   /** A refresh was requested while busy; run once more when the current inference finishes. */
   private pending = false;
+  /** Only remember that a newer live frame exists, never queue its pixels. */
+  private liveFramePending = false;
   private running = false;
   private onResize = () => this.refresh();
   private handle = 0;
@@ -164,7 +166,10 @@ export class FrameLoop {
   private schedule() {
     if (!this.running) return;
     const next = () => {
-      if (this.busy) for (const p of [this.pipeline, ...this.modelPipelines]) p?.markDropped();
+      if (this.busy) {
+        this.liveFramePending = true;
+        for (const p of [this.pipeline, ...this.modelPipelines]) p?.markDropped();
+      }
       void this.run();
       this.schedule();
     };
@@ -189,9 +194,10 @@ export class FrameLoop {
 
   private async tick(slots: (Slot | null)[], pipeline: PipelineRunner | null, modelPipelines: (PipelineRunner | null)[]) {
     this.busy = true;
+    this.liveFramePending = false;
+    const timestamp = this.video.currentTime;
     const failed = new Promise<never>((_, reject) => { this.rejectFrame = reject; });
     try {
-      const timestamp = this.video.currentTime;
       const slotIndex = slots.flatMap((s, i) => (s ? [i] : []));
       const loaded = slotIndex.map((i) => slots[i]!);
       // Grab every model's input before running any of them, so all see the same video frame
@@ -240,6 +246,10 @@ export class FrameLoop {
       this.busy = false;
       if (this.pending) {
         this.pending = false;
+        this.refresh();
+      } else if (this.running && !this.video.paused && this.liveFramePending && this.video.currentTime !== timestamp
+        && slots.some((slot) => slot?.runtime.backend === "wasm")) {
+        // Worker replies arrive between video callbacks: use the latest frame instead of waiting again.
         this.refresh();
       }
     }

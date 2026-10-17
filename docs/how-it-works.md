@@ -18,6 +18,13 @@ For each analyzed frame the app:
    tracking…);
 5. draws everything over the video and records the measurements.
 
+CPU (WASM) sessions run in dedicated module workers, including the CPU reference used by the automatic
+GPU check. Each session keeps its worker until it is released. Image buffers transfer to the worker and
+output buffers transfer back; extra pipeline feeds stay reusable. Frame preparation, decoding, pipelines
+and drawing still run on the page. WebGPU sessions also stay on the page. If a worker cannot start, CPU
+inference falls back to the page. A worker failure reports an inference error and stops that analysis;
+loading a model again creates a fresh worker. Session changes still wait for the current frame to finish.
+
 The code is split in two:
 
 - **`packages/core`**: all the logic, with no browser code: reading configs, preparing frames, decoders,
@@ -30,6 +37,10 @@ The code is split in two:
 The video plays at its normal speed and the app analyzes whatever frame is on screen whenever the models
 are free. Frames that pass while the models are busy are **skipped**, never queued, so the overlay never
 falls behind. The **dropped** number in the bar counts them.
+
+On the CPU path, if another live frame arrived during inference, the loop analyzes the latest available
+frame as soon as the worker replies, without waiting for another video callback. It never queues old
+frames or repeats a paused frame for this catch-up. WebGPU keeps its existing callback scheduling.
 
 With both rig models on a desktop GPU, one frame takes about 0.75 s, so roughly 1 in 20 frames of a 30 fps
 video gets analyzed. This matters for measuring; see [findings](findings.md#skipped-frames-limit-what-can-be-measured).

@@ -81,6 +81,58 @@ faults like the tested cases; agreement does not prove correct results for all i
    `.tflite` int8 model, or native onnxruntime with NNAPI/QNN), which a browser can't reach. `packages/core`
    has no browser code, so it could be reused there.
 
+## CPU inference runs off the page
+
+WASM sessions now live in dedicated module workers, including the automatic GPU check's CPU reference.
+WebGPU stays on the page: its steady-state runs did not produce main-thread long tasks in this test.
+The page still prepares frames, decodes outputs, runs pipelines and draws. The worker takes ownership
+of each image buffer and transfers output buffers back; extra pipeline feeds remain reusable. A session
+keeps its worker until release. If workers are unavailable or cannot load, CPU inference uses the page.
+Worker errors, including asynchronous WASM traps, reject pending calls and reach the existing error
+panel; loading another model can recover without reloading the page.
+
+**Blocking and throughput, PC only.** We compared the milestone's base (`1d69324`) with the worker build
+in visible Chromium at 390x844, using the same 720x1280 fake lamp camera. Each environment has six
+ten-second pairs after orientation locks: three main-first and three worker-first, alternating. Production
+is served under `/model-studio/` without cross-origin isolation, as deployed (single-threaded WASM); dev
+uses its normal isolation headers and four WASM threads. These are medians of three runs per order:
+
+| Environment / order | Infer, page / worker | Analyzed fps, page / worker | Total blocking time, page / worker |
+|---|---|---|---|
+| Production, page first | 78.40 / 78.50 ms | 11.38 / 11.50 | 4176 / 0 ms |
+| Production, worker first | 78.10 / 79.90 ms | 11.32 / 11.30 | 4227 / 0 ms |
+| Dev, page first | 27.63 / 28.84 ms | 20.87 / 26.29 | 0 / 0 ms |
+| Dev, worker first | 27.51 / 28.66 ms | 21.14 / 26.09 | 2 / 0 ms |
+
+Total blocking time sums the part of each main-thread long task beyond 50 ms. Across the six production
+windows it fell from **26,271 ms to zero**; across dev's six windows, **1371 ms to zero**. All twelve worker
+windows had zero long tasks. Dev's median is small because most individual CPU calls are below the 50 ms
+threshold, even though they interrupt animation. The largest animation-callback gap was 250 ms on the
+production page path and 33 ms with workers; dev was 100 ms and 17 ms. No worker window had a gap over
+50 ms. These animation callbacks measure page responsiveness, not the camera's capture rate.
+
+The first prototype lost analyzed frames by waiting for another video callback after a reply. The final
+CPU path remembers whether a live frame arrived while busy, then analyzes the latest frame immediately
+after inference if the source time changed. It queues no old frames and does not catch up paused video.
+Along with transferring image buffers without a copy, this kept production throughput essentially flat
+and raised dev throughput by about 23-26%. Infer time rose by at most about 4.5% in the per-order medians.
+The GPU retains its original scheduling.
+
+A paired ten-second GPU check measured camera inference at 31.3 / 31.6 ms before / after, and 4K video at
+29.1 / 28.5 ms. Analyzed rates were 15.5 / 16.4 fps and 17.8 / 19.0 fps respectively; these single pairs
+are consistent with the unchanged GPU path. The 5.2-second video was replayed only by the timing
+harness to avoid measuring idle time after it ended. Normal playback with a pipeline still does not loop.
+
+On 24 identical seek-stepped 4K frames in each threading setup, the worker's raw CPU outputs, decoded
+masks, key measurements and complete embedded-pipeline summaries matched the original exactly. The
+tests also verified that image buffers transferred and pipeline feed buffers stayed usable. Worker and
+WASM assets load under the production URL prefix. Reproduce with
+`node .atelier/goal/evidence/worker/matrix.mjs` and `node .atelier/goal/evidence/worker/equality.mjs`
+(also set `SINGLE_THREAD=1` for the latter). Raw runs and screenshots are under
+`.atelier/goal/evidence/worker/`; `blocking.json` retains the earlier probe and the final build comparison.
+This does not establish performance on a physical phone or remove the remaining preparation and pipeline
+work from the page.
+
 ## int8 models are slower on the GPU, faster on the CPU
 
 Particle model on `tube_1` (874×212 strip), particle model alone, average of 5 frames:
