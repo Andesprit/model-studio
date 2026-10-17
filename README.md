@@ -58,6 +58,11 @@ and open http://localhost:5173. Choose a subject to download its model; a fresh 
    Rig vortex and Particles also offer **Try an example**;
    the rig's Video 10 and 11 switch on both rig models. More test clips are in `videos/`.
 3. **Download results (.json)** saves everything measured, with one section per model.
+   The key card plots the last ten seconds of thickness (or particle count). Calibrated thickness
+   uses your chosen unit. When a video with an embedded pipeline ends, **Video summary** shows its
+   analyzed time span, analyzed and skipped frames, thickness or particle count statistics, and latest
+   breathing readings beside the download. Fewer than six analyzed frames shows a short note instead.
+   The recap clears on replay or a new source; camera analysis has no end-of-video recap.
    **All measurements and timing** opens the full metric list, backend and per-frame costs.
 
 Open **Advanced** for the power tools:
