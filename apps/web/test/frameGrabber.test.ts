@@ -17,16 +17,27 @@ describe("frame grab canvas", () => {
     const createElement = vi.fn(() => canvas());
     vi.stubGlobal("document", { createElement });
     const input = { ...DEFAULT_INPUT, width: 4, height: 4, padValue: 10 };
-    const source = { videoWidth: 8, videoHeight: 4 } as HTMLVideoElement;
+    const source = { videoWidth: 4000, videoHeight: 2000 } as HTMLVideoElement;
     const result = new FrameGrabber().grab(source, input);
     expect(off.getContext).toHaveBeenCalledWith("2d");
-    expect(createElement).not.toHaveBeenCalled();
     expect([off.width, off.height]).toEqual([4, 4]);
     expect(off.ctx.fillStyle).toBe("rgb(10,10,10)");
     expect(off.ctx.fillRect).toHaveBeenCalledWith(0, 0, 4, 4);
     expect(off.ctx.drawImage).toHaveBeenCalledWith(source, 0, 1, 4, 2);
     expect(result.frame.data).toBe(off.data);
-    expect(result.transform).toMatchObject({ scaleX: 0.5, scaleY: 0.5, padX: 0, padY: 1 });
+    expect(result.transform).toMatchObject({ scaleX: 0.001, scaleY: 0.001, padX: 0, padY: 1 });
+  });
+
+  it("preserves the CPU camera path and switches after a source change", () => {
+    const off = canvas(), cpu = canvas();
+    vi.stubGlobal("OffscreenCanvas", class { constructor() { return off; } });
+    vi.stubGlobal("document", { createElement: () => cpu });
+    const grabber = new FrameGrabber();
+    const input = { ...DEFAULT_INPUT, width: 4, height: 4 };
+    expect(grabber.grab({ videoWidth: 720, videoHeight: 1280 } as HTMLVideoElement, input).frame.data).toBe(cpu.data);
+    expect(cpu.getContext).toHaveBeenCalledWith("2d", { willReadFrequently: true });
+    expect(grabber.grab({ videoWidth: 2160, videoHeight: 3840 } as HTMLVideoElement, input).frame.data).toBe(off.data);
+    expect(grabber.grab({ videoWidth: 720, videoHeight: 1280 } as HTMLVideoElement, input).frame.data).toBe(cpu.data);
   });
 
   it.each(["missing", "no 2D context"])("keeps the HTML canvas path when OffscreenCanvas is %s", (reason) => {
@@ -34,7 +45,7 @@ describe("frame grab canvas", () => {
     vi.stubGlobal("OffscreenCanvas", reason === "missing" ? undefined : class { getContext() { return null; } });
     const createElement = vi.fn(() => fallback);
     vi.stubGlobal("document", { createElement });
-    const result = new FrameGrabber().grab({ videoWidth: 8, videoHeight: 4 } as HTMLVideoElement, { ...DEFAULT_INPUT, width: 4, height: 4 });
+    const result = new FrameGrabber().grab({ videoWidth: 2160, videoHeight: 3840 } as HTMLVideoElement, { ...DEFAULT_INPUT, width: 4, height: 4 });
     expect(createElement).toHaveBeenCalledWith("canvas");
     expect(fallback.getContext).toHaveBeenCalledWith("2d", { willReadFrequently: true });
     expect(result.frame.data).toBe(fallback.data);

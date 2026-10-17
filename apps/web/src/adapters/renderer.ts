@@ -11,7 +11,7 @@ const rgb = (id: number, a = 1) => `rgba(${color(id).join(",")},${a})`;
 
 const KEYPOINT_THRESHOLD = 0.5;
 
-/** Draws a core Result onto a canvas whose pixel size matches the source frame. */
+/** Draws in source-frame coordinates onto a display-sized canvas. */
 export class Renderer {
   private scratch = document.createElement("canvas");
   private scratchCtx = this.scratch.getContext("2d")!;
@@ -19,16 +19,24 @@ export class Renderer {
   constructor(private canvas: HTMLCanvasElement) {}
 
   clear() {
-    this.canvas.getContext("2d")!.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    const ctx = this.canvas.getContext("2d")!;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
   }
 
   draw(result: Result, frameWidth: number, frameHeight: number) {
-    if (this.canvas.width !== frameWidth || this.canvas.height !== frameHeight) {
-      this.canvas.width = frameWidth;
-      this.canvas.height = frameHeight;
+    const width = Math.max(1, this.canvas.clientWidth);
+    const height = Math.max(1, this.canvas.clientHeight);
+    const density = Math.min(devicePixelRatio, 2, Math.sqrt(2_000_000 / (width * height)));
+    const backingWidth = Math.max(1, Math.floor(width * density));
+    const backingHeight = Math.max(1, Math.floor(height * density));
+    if (this.canvas.width !== backingWidth || this.canvas.height !== backingHeight) {
+      this.canvas.width = backingWidth;
+      this.canvas.height = backingHeight;
     }
     const ctx = this.canvas.getContext("2d")!;
-    ctx.clearRect(0, 0, frameWidth, frameHeight);
+    this.clear();
+    ctx.setTransform(backingWidth / frameWidth, 0, 0, backingHeight / frameHeight, 0, 0);
     // Scale strokes/text with resolution so overlays look the same on 480p and 4K.
     const u = Math.max(1, Math.min(frameWidth, frameHeight) / 400);
 
