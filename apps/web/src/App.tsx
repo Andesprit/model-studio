@@ -256,23 +256,25 @@ export function App() {
     setError("");
     try {
       const bytes = entry.bytes ?? (await download(entry.sample!));
-      if (entry.runtime) {
-        await loopRef.current!.detach(i); // let the in-flight frame finish before freeing its GPU buffers
-        await entry.runtime.release();
-      }
-      const rt = await createRuntime(bytes, backend);
-      const inferred = inferConfig(bytes, rt.input);
-      const cfg = entry.explicitConfig ?? withOptions(inferred.config, entry.sample?.options);
-      patchModel(i, {
-        bytes,
-        runtime: rt,
-        config: cfg,
-        configSource: entry.explicitConfig ? "config file" : inferred.source,
-        decoderGuessed: !entry.explicitConfig && inferred.guessed,
-        on,
+      await loopRef.current!.changeModels(async () => {
+        if (entry.runtime) {
+          await loopRef.current!.detach(i); // let the in-flight frame finish before freeing its GPU buffers
+          await entry.runtime.release();
+        }
+        const rt = await createRuntime(bytes, backend);
+        const inferred = inferConfig(bytes, rt.input);
+        const cfg = entry.explicitConfig ?? withOptions(inferred.config, entry.sample?.options);
+        patchModel(i, {
+          bytes,
+          runtime: rt,
+          config: cfg,
+          configSource: entry.explicitConfig ? "config file" : inferred.source,
+          decoderGuessed: !entry.explicitConfig && inferred.guessed,
+          on,
+        });
+        loopRef.current!.setModel(i, on ? rt : null, on ? cfg : null);
+        setModelPipeline(i, await embeddedPipeline(i, bytes));
       });
-      loopRef.current!.setModel(i, on ? rt : null, on ? cfg : null);
-      setModelPipeline(i, await embeddedPipeline(i, bytes));
     } catch (e) {
       patchModel(i, { runtime: undefined, on: false });
       loopRef.current!.setModel(i, null, null);
