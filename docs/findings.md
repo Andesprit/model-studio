@@ -57,18 +57,28 @@ worst healthy error and 4.45 times below the smallest tested fault. Sign agreeme
 particle scores (only 80% agreement despite near-identical numbers); correlation misses constant offsets.
 These comparisons used local test scripts on that one Intel GPU; they do not cover other GPUs.
 
-Creating the additional WASM session and running one test took **198–220 ms** for the lamp with four
-threads, **303 ms** single-threaded (as deployed), and **68–102 ms** for rig vortex. The 40 MB particle
-models are deliberately **not checked**: their test alone took **1.49 s** with four threads and **4.58 s**
-with one on this PC. Select **Advanced → Backend → WASM (CPU)** if particle results look wrong. Changing
+In the earlier reference-only benchmark, creating the additional WASM session and running one test took
+**198–220 ms** for the lamp with four threads, **303 ms** single-threaded (as deployed), and **68–102 ms**
+for rig vortex. The 40 MB particle models are deliberately **not checked**: their test alone took
+**1.49 s** with four threads and **4.58 s** with one on this PC. Select **Advanced → Backend → WASM (CPU)**
+if particle results look wrong. Changing
 the backend reloads the models straight away.
 
-In the full app, a fresh phone-sized camera run reached the first lamp frame in **3.45 s**, against
-**2.85–3.0 s** before checking, with the same two taps and measurements visible without scrolling.
-Reloading in that profile took **1.11 s** and created no WASM test session. Desktop measured **3.20 s**
-then **0.97 s**. Under the same simulated offset, the old app's mask had IoU as low as **0.687** against
-WASM; automatic fallback matched forced WASM masks and measurements exactly on 12 identical 4K frames.
-These are local PC browser timings, not physical-phone or production-network measurements.
+The worker's setup and reference inference now overlap the first WebGPU test. In the full app, median
+time from navigation to the first analyzed lamp frame fell from **2.36 to 2.02 s** with isolation and
+from **2.30 to 2.06 s** single-threaded. The check itself fell from **823 to 517 ms** and **889 to 577 ms**,
+respectively, with no main-thread long tasks during either worker check. These comparisons used five
+fresh persistent profiles per version, alternating order, a visible 390×844 viewport and the fake lamp
+camera on this PC. One single-threaded worker-start outlier is included. The server was local Vite,
+unthrottled; these are not physical-phone or production-network measurements. The two-tap path and
+measurements without scrolling are unchanged. A remembered verdict still skips the check.
+
+The worker gets a separate copy of the test image. If it cannot start or fails, the page-side WASM
+reference waits until the GPU test settles before creating its session; this avoids changing the
+page's shared runtime during inference. That fallback introduced one **320 ms** main-thread long task
+in a simulated blocked-worker, single-threaded run on this PC.
+Earlier simulated-offset tests found the unchecked mask's IoU as low as **0.687** against WASM;
+automatic fallback matched forced WASM masks and measurements exactly on 12 identical 4K frames.
 
 This threshold has been calibrated on **one healthy GPU**, and fallback tested with simulated errors.
 The affected Adreno phone was unavailable for this check. A single synthetic image can catch gross math
