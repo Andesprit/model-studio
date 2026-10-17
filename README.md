@@ -65,6 +65,8 @@ and open http://localhost:5173. Choose a subject to download its model; a fresh 
    On the camera with an embedded pipeline, tap **Finish** to end the session, release the camera and
    see the same recap as **Camera session summary**. The last frame stays visible with a **Session finished**
    label. Tap **Camera** again to start fresh. The recap clears on replay or a new source.
+   Tap **Share** in either recap to send its text and measurements to another app. Browsers without sharing
+   copy the same text to the clipboard and show **Copied**. **Download results (.json)** keeps the full data.
    **All measurements and timing** opens the full metric list, backend and per-frame costs.
 
 Open **Advanced** for the power tools:
