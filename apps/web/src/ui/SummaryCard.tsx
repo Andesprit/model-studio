@@ -3,9 +3,9 @@ import { reading } from "./trend";
 
 export interface ModelSummary { name: string; summary: RunSummary }
 
-export function SummaryCard({ models }: { models: ModelSummary[] }) {
-  return <section className="run-summary" aria-label="Video summary">
-    <h2>Video summary</h2>
+export function SummaryCard({ models, title = "Video summary" }: { models: ModelSummary[]; title?: string }) {
+  return <section className="run-summary" aria-label={title}>
+    <h2>{title}</h2>
     {models.map(({ name, summary: s }, i) => {
       const thickness = Object.entries(s.metrics).find(([key]) => key.startsWith("vortex thickness "));
       const particles = s.metrics["particles in frame"] ?? s.metrics["in frame"];

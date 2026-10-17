@@ -63,6 +63,7 @@ export class FrameLoop {
   /** Only remember that a newer live frame exists, never queue its pixels. */
   private liveFramePending = false;
   private running = false;
+  private finished = false;
   private onResize = () => this.refresh();
   private handle = 0;
   private frameTimes: number[] = [];
@@ -140,6 +141,7 @@ export class FrameLoop {
   }
 
   start() {
+    this.finished = false;
     if (this.running) return;
     this.running = true;
     window.addEventListener("error", this.onRuntimeError);
@@ -157,8 +159,20 @@ export class FrameLoop {
     else cancelAnimationFrame(this.handle);
   }
 
+  /** Freeze this source after its last inference, keeping the pipelines available for export. */
+  async finish(): Promise<void> {
+    this.finished = true;
+    this.running = false;
+    if (this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.handle);
+    else cancelAnimationFrame(this.handle);
+    // Keep the fatal-error listeners until the pending inference has settled.
+    await this.inflight;
+    if (this.finished) this.stop();
+  }
+
   /** Process the current frame once, e.g. when the video is paused and settings change. */
   refresh() {
+    if (this.finished) return;
     if (this.busy) this.pending = true;
     else if (this.video.readyState >= 2) void this.run();
   }
@@ -166,6 +180,7 @@ export class FrameLoop {
   private schedule() {
     if (!this.running) return;
     const next = () => {
+      if (!this.running) return;
       if (this.busy) {
         this.liveFramePending = true;
         for (const p of [this.pipeline, ...this.modelPipelines]) p?.markDropped();

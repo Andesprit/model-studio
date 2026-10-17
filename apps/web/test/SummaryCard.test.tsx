@@ -9,6 +9,14 @@ const summary: RunSummary = { from: 0.1, to: 4.2, framesAnalyzed: 20, framesDrop
 } };
 
 describe("video recap", () => {
+  it("labels a camera recap without changing the default video title", () => {
+    const models = [{ name: "Lamp", summary }];
+    const camera = renderToStaticMarkup(<SummaryCard models={models} title="Camera session summary" />);
+    expect(camera).toContain('aria-label="Camera session summary"');
+    expect(camera).toContain("<h2>Camera session summary</h2>");
+    expect(renderToStaticMarkup(<SummaryCard models={models} />)).toContain("<h2>Video summary</h2>");
+  });
+
   it("shows the runner's time, frame counts, thickness statistics and latest breathing", () => {
     const html = renderToStaticMarkup(<SummaryCard models={[{ name: "Lamp", summary }]} />);
     for (const text of ["0.1", "4.2", "20 analyzed", "3 skipped", "2.35 cm", "1.2 cm", "4.5 cm", "0.12 cm", "1.23 Hz"]) expect(html).toContain(text);

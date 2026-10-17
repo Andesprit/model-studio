@@ -62,7 +62,9 @@ and open http://localhost:5173. Choose a subject to download its model; a fresh 
    uses your chosen unit. When a video with an embedded pipeline ends, **Video summary** shows its
    analyzed time span, analyzed and skipped frames, thickness or particle count statistics, and latest
    breathing readings beside the download. Fewer than six analyzed frames shows a short note instead.
-   The recap clears on replay or a new source; camera analysis has no end-of-video recap.
+   On the camera with an embedded pipeline, tap **Finish** to end the session, release the camera and
+   see the same recap as **Camera session summary**. The last frame stays visible with a **Session finished**
+   label. Tap **Camera** again to start fresh. The recap clears on replay or a new source.
    **All measurements and timing** opens the full metric list, backend and per-frame costs.
 
 Open **Advanced** for the power tools:

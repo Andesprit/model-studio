@@ -54,7 +54,13 @@ with an embedded pipeline ends, **Video summary** shows the analyzed time span, 
 frames, thickness or particle count statistics, and latest breathing readings. Fewer than six analyzed
 frames shows a short note instead.
 The summary uses the same pipeline statistics as **Download results** and clears on replay, seeking or
-a reset. Detector-only video playback still loops; the live camera has no end-of-video summary.
+a reset. Detector-only video playback still loops.
+
+For a live camera with an active embedded pipeline, **Finish** stops new analysis and waits for the last
+inference before reading the same statistics into **Camera session summary**. It releases the camera and
+pauses the last frame with a **Session finished** label. **Download results** saves that finished session;
+**Camera** starts a fresh one, clearing the recap and resetting the measurements. Detector-only cameras
+have no Finish action.
 
 ## Models and how they're configured
 
