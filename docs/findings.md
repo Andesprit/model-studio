@@ -9,14 +9,14 @@ These comparisons were measured in a visible PC browser with a **390×844 phone 
 desktop checks at 1440×900, **not on a physical phone**. They summarize separate tests of the main
 path, frame preparation and CPU worker; they are not one continuous benchmark or a phone-speed claim.
 
-| Measurement | Before | After | Details |
-|---|---|---|---|
-| Controls at a fresh open | 30 | 4 | [Main-path startup](#main-path-startup) |
-| Models downloaded at a fresh open | 41.0 MB | 0.0 MB | [Main-path startup](#main-path-startup) |
-| App taps to a live lamp mask | 4, plus scrolling | 2 without scrolling; 1 on return | [Main-path startup](#main-path-startup) |
-| Preparation per 4K lamp frame | About 30 ms | About 5 ms | [GPU timings](#timings-on-the-pc-gpu) |
-| Main-thread blocking per 10 s, single-threaded CPU path | About 4.7 s | 0 s observed | [CPU worker](#cpu-inference-runs-off-the-page) |
-| Open to first analyzed lamp frame, fast local connection | About 3.6–4.6 s | About 2.0–2.2 s (camera medians) | [Startup conditions](#main-path-startup), [GPU-check timings](#phones-the-gpu-can-compute-wrong-results) |
+| Measurement | Before | After | Measured with | Details |
+|---|---|---|---|---|
+| Controls at a fresh open | 30 | 4 | Startup control count | [Main-path startup](#main-path-startup) |
+| Models downloaded at a fresh open | 41.0 MB | 0.0 MB | Startup network capture | [Main-path startup](#main-path-startup) |
+| App taps to a live lamp mask | 4, plus scrolling | 2 without scrolling; 1 on return | Main-path walkthrough | [Main-path startup](#main-path-startup) |
+| Preparation per 4K lamp frame | About 30 ms | About 5 ms | 4K frame-preparation benchmark | [GPU timings](#timings-on-the-pc-gpu) |
+| Main-thread blocking per 10 s, single-threaded CPU path | About 4.7 s | 0 s observed | Independent CPU-worker repeat | [CPU worker](#cpu-inference-runs-off-the-page) |
+| Open to first analyzed lamp frame, fast local connection | About 3.6–4.6 s | About 2.0–2.2 s (camera medians) | Baseline camera/video timings; later GPU-check camera runs | [Startup conditions](#main-path-startup), [GPU-check timings](#phones-the-gpu-can-compute-wrong-results) |
 
 ### Main-path startup
 

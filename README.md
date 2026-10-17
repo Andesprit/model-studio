@@ -42,6 +42,8 @@ and open http://localhost:5173. Choose a subject to download its model; a fresh 
 
 ## Using it
 
+See [the main path](docs/how-it-works.md#the-main-path) and the [measured before/after gains](docs/findings.md#before-and-after).
+
 1. Choose **Vortex lamp**, **Rig vortex** or **Particles**. Only that model downloads and runs.
    Your subject is remembered for the next visit. Lamp and rig models start loading on return;
    the 39 MB particle model waits until you start a source or tap **Particles** again.
