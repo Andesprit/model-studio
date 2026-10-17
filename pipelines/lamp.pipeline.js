@@ -5,14 +5,14 @@
 //                filmed upright, cap on top)
 //   logits_asis  the frame as it is (a rope that already runs left to right)
 // Its `mode` input picks which (0 both, 1 logits only, 2 logits_asis only); the branch that does not run returns a
-// [1, 1, 1, 1] placeholder. This pipeline asks for both (feeds(), mode 0) and scores both masks on the first
-// DECIDE_FRAMES analyzed frames, then locks the better orientation and asks for that branch only, so the network
-// runs once per frame instead of twice. It measures the rope along its own axis. Before it decides, it shows the
-// frame's better mask. A reset (loop, seek back, new video) decides again.
+// [1, 1, 1, 1] placeholder. This pipeline starts with mode 1, scores the water axis on DECIDE_FRAMES frames with
+// water found, and requests the branch favored by the summed evidence (mode 1 vertical, mode 2 horizontal).
+// It then locks that orientation. Every frame runs one rope branch. It measures the rope along its own axis;
+// after an orientation change, it waits for that branch's mask. A reset (loop, seek back, new video) decides again.
 //
-// Score of a mask = mean probability of its rope pixels x share of those pixels in the largest piece. The wrong
-// orientation gives a weak, scattered mask (on the lamp test frames: IoU 0.18 and ~14 pieces vs 0.92 and 1-2).
-// After scoring, only the largest piece of each mask is kept (there is one rope), as run_model.py does.
+// Cells equal to WATER_OUTSIDE are outside the water. This marker carries stage 1 in the two rope outputs,
+// avoiding extra GPU readbacks. Orientation follows the largest water region's main axis, with squared
+// vertical/horizontal projections summed over the deciding frames. Only the largest rope piece is displayed.
 //
 // Tilt: the model was trained on ropes within a few degrees of horizontal, and the two branches cover about +-15 deg
 // around vertical and horizontal. A diagonal rope (30-75 deg) gives a bad mask in both, and the score can then pick
@@ -26,18 +26,23 @@
 //   rope, from the left for a vertical one), drift speed, waviness, breathing.
 // Draw a line of known length in step 5 (Calibrate) for real units. Times are seconds of video.
 
-const DECIDE_FRAMES = 10; // analyzed frames whose scores are summed before the orientation is locked
+const DECIDE_FRAMES = 10; // analyzed frames with water whose scores are summed before the orientation is locked
 const TILT_WINDOW = 10; // analyzed frames whose tilt estimates are medianed (one frame is noisy, +-10 deg)
 const TILT_WARN_DEG = 15; // above this the mask gets worse (lamp test frames: IoU 0.90 at 10 deg, 0.81 at 20, 0.40 at 30)
 const BREATHING_WINDOW = 60;
 const TREND_FRAMES = 5;
+const WATER_MIN_FRACTION = 0.01; // smaller regions are too small to count as a lamp in view
+const WATER_MISSING_FRAMES = 5;
+const WATER_OUTSIDE = -10000;
 
 export default {
   name: "vortex-lamp",
 
   describe: {
-    "vortex orientation": "which way the rope runs: vertical (the model saw the frame turned) or horizontal (as filmed); locked after the first 10 analyzed frames",
-    "vortex orientation score": "confidence of each orientation's mask (mean rope-pixel probability x share in the largest piece), summed over the deciding frames",
+    "water found": "yes when the largest predicted water region covers at least 1% of the visible frame; its green outline shows stage 1",
+    "lamp warning": "no lamp in view after five analyzed frames with no or tiny water; clears when water returns",
+    "vortex orientation": "which way the rope runs: vertical (the model saw the frame turned) or horizontal (as filmed); locked after 10 analyzed frames with water found",
+    "vortex orientation score": "squared vertical/horizontal projection of the largest water region's main axis, summed over the deciding frames",
     "vortex tilt deg": "angle between the rope's main axis and the chosen orientation (vertical or horizontal), median of the last 10 analyzed frames",
     "vortex tilt warning": "shown above 15 deg: the masks get worse with tilt and fail around 30-75 deg; hold the phone straighter",
     "vortex present %": "share of the slices across the rope where the rope is seen",
@@ -55,16 +60,26 @@ export default {
   decode(outputs, ctx) {
     const masks = {};
     const scores = {};
+    let water = null;
     for (const [which, name] of [["vertical", "logits"], ["horizontal", "logits_asis"]]) {
       const t = outputs[name];
       if (!t || t.data.length <= 1) continue; // the branch that did not run (placeholder)
       const seg = ctx.lib.decode("semantic-seg", { [name]: t }, { outputName: name, mode: "binary", threshold: 0 }).segmentation;
-      // scored on the whole mask; then only the largest piece is kept (there is one rope), as run_model.py does
-      scores[which] = maskScore(t, seg);
+      if (!water) {
+        // Compare the exact marker on the original tensor, before any resampling.
+        water = { ...seg, classes: Uint16Array.from(t.data, v => Number(v !== WATER_OUTSIDE)) };
+        keepLargest(water);
+      }
       keepLargest(seg);
       masks[which] = seg;
     }
-    return { segmentation: masks[better(scores)], lamp: { masks, scores } };
+    if (water) {
+      const angle = axisTilt(water, false);
+      const radians = angle === null ? null : angle * Math.PI / 180;
+      scores.vertical = radians === null ? 0 : Math.sin(radians) ** 2;
+      scores.horizontal = radians === null ? 0 : Math.cos(radians) ** 2;
+    }
+    return { segmentation: masks[better(scores)], lamp: { masks, scores, water } };
   },
 
   create(ctx) {
@@ -78,6 +93,7 @@ export default {
     let seen = 0;
     let lastT = null;
     let locked = null;
+    let missingWater = 0;
 
     return {
       step(result, frame) {
@@ -86,21 +102,31 @@ export default {
         const lamp = result.lamp;
         if (!lamp) return out;
         const isNew = lastT === null || frame.timestamp > lastT;
-        // only frames where both branches ran count toward the decision (the first frame after a reset may have
-        // run with the previous video's locked mode)
-        const both = "vertical" in lamp.scores && "horizontal" in lamp.scores;
-        if (!locked && isNew && both) {
+        const water = lamp.water ? waterRegion(lamp.water, frame) : null;
+        if (!locked && isNew && water?.found) {
           sums.vertical += lamp.scores.vertical;
           sums.horizontal += lamp.scores.horizontal;
           if (++seen >= DECIDE_FRAMES) locked = better(sums);
         }
         lastT = frame.timestamp;
-        const which = locked && lamp.masks[locked] ? locked : better(lamp.scores);
+        if (water) {
+          out.metrics["water found"] = water.found ? "yes" : "no";
+          if (water.found) {
+            missingWater = 0;
+            out.overlays.push({ type: "polyline", points: water.points, color: "#4ade80" });
+          } else if (isNew) missingWater++;
+          if (missingWater >= WATER_MISSING_FRAMES) {
+            out.metrics["lamp warning"] = "no lamp in view";
+            out.overlays.push({ type: "text", at: { x: frame.width * 0.05, y: frame.height * 0.1 }, text: "no lamp in view", color: "#ff3b3b" });
+          }
+        }
+        const which = locked ?? better(sums);
         if (!which) return out;
         out.segmentation = lamp.masks[which];
         out.metrics["vortex orientation"] = locked ? which : `${which} (deciding ${seen}/${DECIDE_FRAMES})`;
         out.metrics["vortex orientation score vertical"] = round(sums.vertical, 2);
         out.metrics["vortex orientation score horizontal"] = round(sums.horizontal, 2);
+        if (!out.segmentation) return out; // the next frame will run the newly selected branch
 
         const t = axisTilt(out.segmentation, which === "vertical");
         if (isNew && t !== null) {
@@ -125,8 +151,8 @@ export default {
         }
         return out;
       },
-      // the graph's mode for the next frame: both branches until the orientation is locked, then that one only
-      feeds: () => ({ mode: { dims: [1], data: new Float32Array([locked === "vertical" ? 1 : locked === "horizontal" ? 2 : 0]) } }),
+      // Water is present in either branch, so deciding costs the same as locked inference.
+      feeds: () => ({ mode: { dims: [1], data: new Float32Array([(locked ?? better(sums)) === "horizontal" ? 2 : 1]) } }),
       summary: () => ({
         orientation: locked,
         orientationScores: { ...sums },
@@ -136,6 +162,29 @@ export default {
     };
   },
 };
+
+/** Outline the largest water region in source-frame coordinates, independent of rope orientation. */
+function waterRegion(seg, frame) {
+  const { width: w, height: h, classes, rect } = seg;
+  const cw = rect.width / w, ch = rect.height / h;
+  let visible = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const px = rect.x + (x + .5) * cw, py = rect.y + (y + .5) * ch;
+    if (px >= 0 && px < frame.width && py >= 0 && py < frame.height) visible++;
+    else classes[y * w + x] = seg.background;
+  }
+  keepLargest(seg);
+  const pixels = classes.reduce((n, value) => n + Number(value !== seg.background), 0);
+  if (!pixels || pixels < WATER_MIN_FRACTION * visible) return { found: false, points: [] };
+  const left = [], right = [];
+  const point = (x, y) => ({ x: Math.max(0, Math.min(frame.width, rect.x + x * cw)), y: Math.max(0, Math.min(frame.height, rect.y + y * ch)) });
+  for (let y = 0; y < h; y++) {
+    let lo = w, hi = -1;
+    for (let x = 0; x < w; x++) if (classes[y * w + x] !== seg.background) { lo = Math.min(lo, x); hi = x; }
+    if (hi >= lo) { left.push(point(lo, y + .5)); right.push(point(hi + 1, y + .5)); }
+  }
+  return { found: true, points: [...left, ...right.reverse(), left[0]] };
+}
 
 // ---------------------------------------------------------------------------------------------------
 // Orientation
@@ -147,20 +196,6 @@ function better(scores) {
   const h = scores.horizontal;
   if (v === undefined) return h === undefined ? null : "horizontal";
   return h === undefined || v >= h ? "vertical" : "horizontal";
-}
-
-/** Mean sigmoid of the rope pixels x share of the rope pixels in the largest 4-connected piece. */
-function maskScore(tensor, seg) {
-  const { classes } = seg;
-  let n = 0;
-  let prob = 0;
-  for (let i = 0; i < classes.length; i++) {
-    if (classes[i]) {
-      n++;
-      prob += 1 / (1 + Math.exp(-tensor.data[i]));
-    }
-  }
-  return n ? (prob / n) * (pieces(seg).largestSize / n) : 0;
 }
 
 /** Sets every rope cell outside the largest piece to background, in place. */
