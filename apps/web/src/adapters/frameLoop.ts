@@ -48,6 +48,14 @@ export class FrameLoop {
   private modelPipelines: (PipelineRunner | null)[] = [];
   private busy = false;
   private inflight: Promise<void> = Promise.resolve();
+  private modelChanges: Promise<void> = Promise.resolve();
+  private changingModels = 0;
+  private rejectFrame: ((error: unknown) => void) | null = null;
+  private onRuntimeError = (event: ErrorEvent | PromiseRejectionEvent) => {
+    const error = "reason" in event ? event.reason : event.error;
+    // ORT can trap outside session.run's promise, leaving it pending forever.
+    if (error instanceof WebAssembly.RuntimeError) this.rejectFrame?.(error);
+  };
   /** Set after an error; cleared when the model or config changes. */
   private halted = false;
   /** A refresh was requested while busy; run once more when the current inference finishes. */
@@ -79,6 +87,23 @@ export class FrameLoop {
   detach(slot: number): Promise<void> {
     this.setModel(slot, null, null);
     return this.inflight;
+  }
+
+  /** Session setup shares ORT state with inference. Drain the frame and serialize model changes. */
+  async changeModels<T>(change: () => Promise<T>): Promise<T> {
+    this.changingModels++;
+    const previous = this.modelChanges;
+    let release!: () => void;
+    this.modelChanges = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      await previous;
+      await this.inflight;
+      return await change();
+    } finally {
+      this.changingModels--;
+      release();
+      if (!this.changingModels) this.refresh();
+    }
   }
 
   /** Swap a slot's config without reloading its model; re-runs on the current frame if paused. */
@@ -114,11 +139,15 @@ export class FrameLoop {
   start() {
     if (this.running) return;
     this.running = true;
+    window.addEventListener("error", this.onRuntimeError);
+    window.addEventListener("unhandledrejection", this.onRuntimeError);
     this.schedule();
   }
 
   stop() {
     this.running = false;
+    window.removeEventListener("error", this.onRuntimeError);
+    window.removeEventListener("unhandledrejection", this.onRuntimeError);
     if (this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.handle);
     else cancelAnimationFrame(this.handle);
   }
@@ -142,7 +171,7 @@ export class FrameLoop {
   }
 
   private run() {
-    if (this.busy || this.halted || !this.slots.some(Boolean) || this.video.readyState < 2) return;
+    if (this.busy || this.changingModels || this.halted || !this.slots.some(Boolean) || this.video.readyState < 2) return;
     this.inflight = this.tick([...this.slots], this.pipeline, [...this.modelPipelines]);
   }
 
@@ -157,6 +186,7 @@ export class FrameLoop {
 
   private async tick(slots: (Slot | null)[], pipeline: PipelineRunner | null, modelPipelines: (PipelineRunner | null)[]) {
     this.busy = true;
+    const failed = new Promise<never>((_, reject) => { this.rejectFrame = reject; });
     try {
       const timestamp = this.video.currentTime;
       const slotIndex = slots.flatMap((s, i) => (s ? [i] : []));
@@ -174,7 +204,7 @@ export class FrameLoop {
       for (const [i, { runtime, config }] of loaded.entries()) {
         const t1 = performance.now();
         // The model's own pipeline can set its other inputs (e.g. which branch of the graph runs).
-        const outputs = await runtime.run(prepared[i].tensor, modelPipelines[slotIndex[i]]?.feeds(timestamp));
+        const outputs = await Promise.race([runtime.run(prepared[i].tensor, modelPipelines[slotIndex[i]]?.feeds(timestamp)), failed]);
         inferByModel.push(performance.now() - t1);
         inputs.push({ outputs, config, transform: prepared[i].transform });
       }
@@ -196,13 +226,14 @@ export class FrameLoop {
       this.report(preMs, inferByModel, t3 - t2, t3, result);
     } catch (e) {
       // A failing decoder would fail on every frame; halt and surface it once.
-      // Ignore failures from a model or config that was replaced while this frame was in flight.
-      if (this.current(slots, pipeline, modelPipelines)) {
+      // Ignore ordinary stale failures; a WASM trap also affects the replacement model's shared runtime.
+      if (e instanceof WebAssembly.RuntimeError || this.current(slots, pipeline, modelPipelines)) {
         this.halted = true;
         this.video.pause();
         this.cb.onError(e);
       }
     } finally {
+      this.rejectFrame = null;
       this.busy = false;
       if (this.pending) {
         this.pending = false;
