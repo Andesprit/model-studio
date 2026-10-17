@@ -1,157 +1,190 @@
-/**
- * The vortex lamp models (apps/web/public/models/vortex_lamp_auto_fp16.onnx and _fp32.onnx, the same graph in two
- * precisions) and their pipeline (pipelines/lamp.pipeline.js):
- * the embedded manifest and pipeline, and the pipeline's orientation choice, largest-piece filter and tilt warning on
- * synthetic logits. The model outputs both orientations: `logits` (frame seen turned, right for a vertical rope) and
- * `logits_asis` (frame as it is, right for a horizontal rope).
- */
+/** Drop into model-studio/packages/core/test; exercise the delivered two-stage lamp contract. */
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import * as ort from "onnxruntime-web";
 import { describe, expect, it } from "vitest";
 import {
-  computeTransform,
-  configFromMetadata,
-  definePipeline,
-  PIPELINE_METADATA_KEY,
-  PipelineRunner,
-  readOnnxMetadata,
-  type Result,
-  type Tensor,
+  computeTransform, configFromMetadata, definePipeline, PIPELINE_METADATA_KEY,
+  PipelineRunner, readOnnxMetadata, type Result, type Tensor,
 } from "../src";
 
 const root = `${process.cwd()}/../..`;
 const pipelineFile = `${root}/pipelines/lamp.pipeline.js`;
-const modelMeta = (precision: string) =>
-  readOnnxMetadata(new Uint8Array(readFileSync(`${root}/apps/web/public/models/vortex_lamp_auto_${precision}.onnx`)));
-const config = configFromMetadata(modelMeta("fp16"))!;
+const modelBytes = (precision: string) =>
+  new Uint8Array(readFileSync(`${root}/apps/web/public/models/vortex_lamp_auto_${precision}.onnx`));
+const config = configFromMetadata(readOnnxMetadata(modelBytes("fp16")))!;
 const lamp = definePipeline((await import(pathToFileURL(pipelineFile).href)).default);
-
-const H = 416;
-const W = 232;
-/** A phone frame held upright. */
+const H = 416, W = 232, OUTSIDE = -10000;
 const transform = computeTransform(720, 1280, config.input);
-
-/** Logits of a rope: +4 within `half` cells of the segment through (cx, cy) at `deg` from vertical (clockwise), else -4. */
-function rope(deg: number, cx = 116, cy = 200, length = 300, half = 10): Tensor {
-  const data = new Float32Array(H * W).fill(-4);
-  const a = (deg * Math.PI) / 180;
-  const [dx, dy] = [Math.sin(a), -Math.cos(a)]; // along the rope, top end first
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const along = (x - cx) * dx + (y - cy) * dy;
-      const across = Math.abs(-(x - cx) * dy + (y - cy) * dx);
-      if (Math.abs(along) <= length / 2 && across <= half) data[y * W + x] = 4;
-    }
-  }
-  return { dims: [1, 1, H, W], data };
-}
-
-/** A weak, scattered mask: isolated cells, as the wrong orientation gives. */
-function scattered(): Tensor {
-  const data = new Float32Array(H * W).fill(-4);
-  for (let y = 4; y < H; y += 9) for (let x = 4; x < W; x += 9) data[y * W + x] = 0.5;
-  return { dims: [1, 1, H, W], data };
-}
-
-/** The rope of `t` laid left to right (rows become columns, squeezed to the canvas width). */
-const sideways = (t: Tensor): Tensor => {
-  const data = new Float32Array(H * W).fill(-4);
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) if (t.data[y * W + x] > 0) data[(x + 90) * W + Math.min(W - 1, Math.round((y * W) / H))] = 4;
-  }
-  return { dims: [1, 1, H, W], data };
-};
-
+const tensor = (data: Float32Array): Tensor => ({ dims: [1, 1, H, W], data });
+const blank = () => tensor(new Float32Array(H * W).fill(OUTSIDE));
 const placeholder = (): Tensor => ({ dims: [1, 1, 1, 1], data: new Float32Array(1) });
 
-/**
- * Runs the pipeline as the app does, with the graph's If emulated: before each frame the pipeline's feeds() give
- * `mode` (none = zeros = 0); mode 1 replaces logits_asis by the placeholder, mode 2 replaces logits.
- * `times` are the frames' timestamps (default 0, 1/30, 2/30...).
- */
-function play(frames: { logits: Tensor; logits_asis: Tensor }[], times = frames.map((_, i) => i / 30), runner = new PipelineRunner(lamp, {}, null)) {
+/** Tube and rope share an axis; negative rope logits inside water must still count as water. */
+function tube(deg: number, ropeHalf = 8): Tensor {
+  const t = blank();
+  const a = deg * Math.PI / 180;
+  const dx = Math.sin(a), dy = -Math.cos(a);
+  const length = Math.abs(deg) === 90 ? 190 : 320;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const along = (x - 116) * dx + (y - 208) * dy;
+    const across = Math.abs(-(x - 116) * dy + (y - 208) * dx);
+    if (Math.abs(along) <= length / 2 && across <= 35)
+      t.data[y * W + x] = across <= ropeHalf ? 4 : -4;
+  }
+  return t;
+}
+
+const pair = (logits: Tensor, logits_asis = logits) => ({ logits, logits_asis });
+
+/** Emulate runtime zero-fill and If placeholders, including PipelineRunner's bootstrap and rewind. */
+function play(frames: ReturnType<typeof pair>[], times = frames.map((_, i) => i / 30)) {
+  const runner = new PipelineRunner(lamp, {}, null);
   const modes: number[] = [];
   const results: Result[] = frames.map((full, i) => {
-    const mode = runner.feeds(times[i]).mode?.data[0] ?? 0;
+    const feed = runner.feeds(times[i]).mode;
+    if (feed) {
+      expect(feed.dims).toEqual([1]);
+      expect(feed.data).toBeInstanceOf(Float32Array);
+    }
+    const mode = feed?.data[0] ?? 0;
     modes.push(mode);
-    const outputs = { logits: mode === 2 ? placeholder() : full.logits, logits_asis: mode === 1 ? placeholder() : full.logits_asis };
-    return runner.run([{ outputs, config, transform }], times[i]);
+    return runner.run([{ outputs: {
+      logits: mode === 2 ? placeholder() : full.logits,
+      logits_asis: mode === 1 ? placeholder() : full.logits_asis,
+    }, config, transform }], times[i]);
   });
   return { results, modes, runner };
 }
 
-const run = (frames: { logits: Tensor; logits_asis: Tensor }[]): Result[] => play(frames).results;
+const repeat = (t: Tensor, n = 12) => Array.from({ length: n }, () => pair(t));
 
 describe.each(["fp16", "fp32"])("vortex lamp model, %s", (precision) => {
-  const meta = modelMeta(precision);
-
-  it("embeds a manifest that reads as a gray, portrait, top-left letterbox binary mask", () => {
+  const bytes = modelBytes(precision);
+  const meta = readOnnxMetadata(bytes);
+  it("embeds a gray portrait top-left letterbox manifest and the delivered pipeline", () => {
     const c = configFromMetadata(meta)!;
     expect(c.decoder).toBe("semantic-seg");
     expect(c.input).toMatchObject({ width: W, height: H, channels: 1, resize: "letterbox", align: "top-left", padValue: 0 });
     expect(c.options).toMatchObject({ outputName: "logits", mode: "binary", threshold: 0 });
-  });
-
-  it("embeds pipelines/lamp.pipeline.js unchanged", () => {
-    const lf = (s: string) => s.replace(/\r\n/g, "\n"); // a Windows checkout may have turned the file to CRLF
+    const lf = (s: string) => s.replace(/\r\n/g, "\n");
     expect(lf(meta[PIPELINE_METADATA_KEY])).toBe(lf(readFileSync(pipelineFile, "utf8")));
   });
+
+  it("has exactly two float32 rope outputs with the exact water marker and unused-branch placeholder", async () => {
+    ort.env.wasm.numThreads = 1;
+    const session = await ort.InferenceSession.create(bytes, { executionProviders: ["wasm"] });
+    try {
+      expect(session.inputNames).toEqual(["image", "mode"]);
+      expect(session.outputNames).toEqual(["logits", "logits_asis"]);
+      for (const mode of [0, 1, 2]) {
+        const outputs = await session.run({
+          image: new ort.Tensor("float32", new Float32Array(H * W), [1, 1, H, W]),
+          mode: new ort.Tensor("float32", new Float32Array([mode]), [1]),
+        });
+        for (const [name, t] of Object.entries(outputs)) {
+          expect(t.type).toBe("float32");
+          if ((mode === 1 && name === "logits_asis") || (mode === 2 && name === "logits")) {
+            expect(t.dims).toEqual([1, 1, 1, 1]);
+            expect(Array.from(t.data as Float32Array)).toEqual([0]);
+          } else {
+            expect(t.dims).toEqual([1, 1, H, W]);
+            expect((t.data as Float32Array).includes(OUTSIDE)).toBe(true);
+          }
+          t.dispose();
+        }
+      }
+    } finally { await session.release(); }
+  }, 60000);
 });
 
 describe("lamp pipeline", () => {
-  it("decides on the first 10 frames and locks vertical for an upright rope", () => {
-    const results = run(Array.from({ length: 12 }, () => ({ logits: rope(0), logits_asis: scattered() })));
+  it("locks vertical using water even when the only rope pixels run horizontally", () => {
+    const t = tube(0, -1); // no positive rope pixels
+    for (let y = 200; y < 210; y++) for (let x = 90; x < 140; x++) t.data[y * W + x] = 4;
+    const { results, modes } = play(repeat(t));
+    expect(modes).toEqual([0, ...Array(11).fill(1)]);
     expect(results[0].metrics!["vortex orientation"]).toBe("vertical (deciding 1/10)");
     expect(results[11].metrics!["vortex orientation"]).toBe("vertical");
-    expect(Math.abs(Number(results[11].metrics!["vortex tilt deg"]))).toBeLessThan(1);
-    expect(results[11].metrics!["vortex tilt warning"]).toBeUndefined();
-    expect(Number(results[11].metrics!["vortex thickness px"])).toBeGreaterThan(0);
+    expect(results[11].metrics!["water found"]).toBe("yes");
     expect("lamp" in results[11]).toBe(false);
   });
 
-  it("locks horizontal when the as-is output holds the rope", () => {
-    const results = run(Array.from({ length: 12 }, () => ({ logits: scattered(), logits_asis: sideways(rope(0)) })));
+  it("switches to the horizontal branch from water evidence before locking", () => {
+    const wrongRope = tube(90, -1);
+    for (let y = 180; y < 235; y++) for (let x = 110; x < 120; x++) wrongRope.data[y * W + x] = 4;
+    const frames = Array.from({ length: 12 }, () => pair(wrongRope, tube(90)));
+    const { results, modes } = play(frames);
+    expect(modes).toEqual([0, ...Array(11).fill(2)]);
+    expect(results[0].metrics!["vortex orientation"]).toBe("horizontal (deciding 1/10)");
     expect(results[11].metrics!["vortex orientation"]).toBe("horizontal");
     expect(Math.abs(Number(results[11].metrics!["vortex tilt deg"]))).toBeLessThan(1);
-    expect(Number(results[11].metrics!["vortex present %"])).toBeGreaterThan(50);
+    expect(Number(results[11].metrics!["vortex thickness px"])).toBeGreaterThan(0);
   });
 
-  it("asks for both branches until it locks, then only the locked one", () => {
-    const upright = play(Array.from({ length: 14 }, () => ({ logits: rope(0), logits_asis: scattered() })));
-    expect(upright.modes).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]);
-    const last = upright.results[13];
-    expect(last.metrics!["vortex orientation"]).toBe("vertical");
-    expect(Number(last.metrics!["vortex thickness px"])).toBeGreaterThan(0);
-    expect(last.segmentation!.classes.some((c) => c === 1)).toBe(true);
-    const flat = play(Array.from({ length: 12 }, () => ({ logits: scattered(), logits_asis: sideways(rope(0)) })));
-    expect(flat.modes.slice(10)).toEqual([2, 2]);
-    expect(flat.results[11].metrics!["vortex orientation"]).toBe("horizontal");
-  });
-
-  it("decides again, with both branches, after a seek back", () => {
-    const frames = Array.from({ length: 13 }, () => ({ logits: rope(0), logits_asis: scattered() }));
-    const times = [...Array.from({ length: 12 }, (_, i) => i / 30), 0]; // the 13th frame seeks back to the start
-    const { results, modes } = play(frames, times);
-    expect(modes[11]).toBe(1);
-    expect(modes[12]).toBe(0); // time went backwards: the runner starts fresh, so the graph runs both branches
+  it("bootstraps both branches again after rewind, then requests one branch", () => {
+    const times = [...Array.from({ length: 12 }, (_, i) => i / 30), 0, 1 / 30];
+    const { results, modes } = play(repeat(tube(0), 14), times);
+    expect(modes).toEqual([0, ...Array(11).fill(1), 0, 1]);
     expect(results[12].metrics!["vortex orientation"]).toBe("vertical (deciding 1/10)");
   });
 
-  it("keeps only the largest piece of the mask", () => {
-    const logits = rope(0);
-    for (let y = 380; y < 400; y++) for (let x = 10; x < 30; x++) logits.data[y * W + x] = 4; // a false piece near the base
-    const seg = run([{ logits, logits_asis: scattered() }])[0].segmentation!;
-    let stray = 0;
-    for (let y = 380; y < 400; y++) for (let x = 10; x < 30; x++) stray += seg.classes[y * W + x];
-    expect(stray).toBe(0);
+  it.each(["blank", "tiny"])("ignores %s water then locks after ten distinct sideways water frames", (kind) => {
+    const empty = blank();
+    if (kind === "tiny") empty.data[80 * W + 80] = -4;
+    const frames = [...repeat(empty, 15), ...repeat(tube(90), 10)];
+    const { results, modes } = play(frames);
+    expect(modes.slice(0, 16)).toEqual([0, ...Array(15).fill(1)]);
+    expect(modes.slice(16)).toEqual(Array(9).fill(2));
+    expect(results[14].metrics!["vortex orientation"]).toBe("vertical (deciding 0/10)");
+    expect(results[23].metrics!["vortex orientation"]).toContain("deciding 9/10");
+    expect(results[24].metrics!["vortex orientation"]).toBe("horizontal");
+    expect(results[15].segmentation).toBeUndefined(); // wait for the requested branch
+    expect(results[24].metrics!["lamp warning"]).toBeUndefined();
   });
 
-  it("measures the tilt and warns above 15 degrees", () => {
-    const tilted = run(Array.from({ length: 12 }, () => ({ logits: rope(25), logits_asis: scattered() })))[11];
+  it("warns after five distinct no-water frames and clears on recovery", () => {
+    const frames = [...repeat(blank(), 5), ...repeat(tube(0), 1)];
+    const times = [0, 1 / 30, 2 / 30, 3 / 30, 4 / 30, 5 / 30];
+    const { results } = play(frames, times);
+    expect(results.slice(0, 4).every(r => r.metrics!["lamp warning"] === undefined)).toBe(true);
+    expect(results[4].metrics!["lamp warning"]).toBe("no lamp in view");
+    expect(results[4].overlays!.some(o => o.type === "text")).toBe(true);
+    expect(results[5].metrics!["lamp warning"]).toBeUndefined();
+    expect(results[5].metrics!["water found"]).toBe("yes");
+    const paused = play(repeat(blank(), 8), [0, 1, 2, 3, 3, 3, 3, 4]);
+    expect(paused.results[6].metrics!["lamp warning"]).toBeUndefined();
+    expect(paused.results[7].metrics!["lamp warning"]).toBe("no lamp in view");
+    const repeated = play(repeat(tube(90), 12), Array(12).fill(0));
+    expect(repeated.results[11].metrics!["vortex orientation"]).toContain("deciding 1/10");
+  });
+
+  it("reads exact water markers including negative in-water logits, and ignores placeholders", () => {
+    const t = tube(0, -1);
+    t.data[200 * W + 116] = -9999; // a negative rope logit is still water
+    const { results } = play(repeat(t, 2));
+    for (const r of results) {
+      expect(r.metrics!["water found"]).toBe("yes");
+      expect(r.overlays!.some(o => o.type === "polyline" && o.color === "#4ade80")).toBe(true);
+      expect(r.segmentation!.classes.some(v => v !== 0)).toBe(false);
+    }
+  });
+
+  it("keeps only the largest rope piece, with all displayed pixels inside water", () => {
+    const t = tube(0);
+    for (let y = 320; y < 326; y++) for (let x = 85; x < 91; x++) t.data[y * W + x] = 4;
+    const seg = play([pair(t)]).results[0].segmentation!;
+    for (let y = 320; y < 326; y++) for (let x = 85; x < 91; x++) expect(seg.classes[y * W + x]).toBe(0);
+    expect(seg.classes.some(v => v === 1)).toBe(true);
+    expect(seg.classes.every((v, i) => !v || t.data[i] !== OUTSIDE)).toBe(true);
+  });
+
+  it("measures rope tilt and warns above 15 degrees", () => {
+    const tilted = play(repeat(tube(25))).results[11];
     expect(Number(tilted.metrics!["vortex tilt deg"])).toBeCloseTo(25, 0);
     expect(String(tilted.metrics!["vortex tilt warning"])).toContain("hold the phone straighter");
-    expect(tilted.overlays!.some((o) => o.type === "text")).toBe(true);
-    const slight = run(Array.from({ length: 12 }, () => ({ logits: rope(-10), logits_asis: scattered() })))[11];
+    expect(tilted.overlays!.some(o => o.type === "text")).toBe(true);
+    const slight = play(repeat(tube(-10))).results[11];
     expect(Number(slight.metrics!["vortex tilt deg"])).toBeCloseTo(-10, 0);
     expect(slight.metrics!["vortex tilt warning"]).toBeUndefined();
   });
