@@ -94,6 +94,9 @@ main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .run-summary dl { display: grid; gap: 4px; }
 .run-summary dt { color: var(--muted); font-size: 11px; }
 .run-summary dd { margin: 0; font-variant-numeric: tabular-nums; }
+.summary-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.summary-actions button { min-height: 44px; }
+.run-summary [role="status"]:empty { display: none; }
 .model-summary { display: flex; flex-direction: column; gap: 4px; }
 .download { align-self: start; min-height: 36px; }
 .advanced { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 12px; }
