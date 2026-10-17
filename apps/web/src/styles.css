@@ -94,7 +94,9 @@ main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .run-summary dl { display: grid; gap: 4px; }
 .run-summary dt { color: var(--muted); font-size: 11px; }
 .run-summary dd { margin: 0; font-variant-numeric: tabular-nums; }
-.summary-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.summary-actions { position: relative; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.summary-actions h2 { flex: 1; }
+.summary-actions .share-error { position: absolute; right: 0; bottom: 100%; max-width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); z-index: 1; }
 .summary-actions button { min-height: 44px; }
 .run-summary [role="status"]:empty { display: none; }
 .model-summary { display: flex; flex-direction: column; gap: 4px; }
@@ -129,9 +131,10 @@ em.err { font-style: normal; }
   .source-bar .row { max-width: none; }
   .target-picker button, .source-bar .row > * { min-height: 40px; padding: 6px; }
   .analysis-view, .analysis-view.finished { --stage-height: calc(100dvh - 124px); display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 12px; }
-  .key-metrics { padding: 10px 12px; gap: 4px; }
+  .analysis-readings { gap: 6px; }
+  .key-metrics { padding: 8px 12px; gap: 4px; }
   .key-metrics h2 { margin: 0; }
-  .key-metrics dl { gap: 6px; }
+  .key-metrics dl { gap: 3px; }
   .key-metrics dd { font-size: 14px; }
   .reading-actions > * { min-height: 40px; }
 }

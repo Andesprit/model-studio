@@ -39,12 +39,18 @@ export class TrendBuffer {
   }
 }
 
+export function trendWindow(points: TrendPoint[]) {
+  const span = points.length ? Math.min(10, points[points.length - 1].t - points[0].t) : 0;
+  return { span, label: `last ${span < 1 ? reading(span) : Math.round(span)} s` };
+}
+
 export function trendPath(points: TrendPoint[]): string {
   if (!points.length) return "";
   const end = points[points.length - 1].t;
+  const span = trendWindow(points).span || 1;
   const values = points.map(p => p.value), low = Math.min(...values), high = Math.max(...values);
   return points.map((p, i) => {
-    const x = 2 + (p.t - end + 10) / 10 * 296;
+    const x = 2 + (p.t - end + span) / span * 296;
     const y = high === low ? 17 : 31 - (p.value - low) / (high - low) * 28;
     return `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
