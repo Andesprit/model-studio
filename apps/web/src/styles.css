@@ -123,7 +123,7 @@ em.err { font-style: normal; }
   .advanced-grid { grid-template-columns: 1fr; gap: 8px; }
 }
 @media (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
-  .app { display: grid; grid-template-columns: 3fr 2fr; padding: 8px 16px; gap: 8px; }
+  .app { display: grid; grid-template-columns: 3fr 2fr; padding: 8px 16px; gap: 4px; }
   .app > header, .app > main, .app > .advanced { grid-column: 1 / -1; }
   .app > header h1 { font-size: 18px; margin: 0; }
   .app > header .hint { display: none; }
@@ -132,7 +132,7 @@ em.err { font-style: normal; }
   .target-picker button, .source-bar .row > * { min-height: 40px; padding: 6px; }
   .analysis-view, .analysis-view.finished { --stage-height: calc(100dvh - 124px); display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 12px; }
   .analysis-readings { gap: 6px; }
-  .key-metrics { padding: 8px 12px; gap: 4px; }
+  .key-metrics { padding: 4px 12px; gap: 4px; }
   .key-metrics h2 { margin: 0; }
   .key-metrics dl { gap: 3px; }
   .key-metrics dd { font-size: 14px; }
