@@ -101,6 +101,46 @@ to **WASM (CPU)**. Advanced shows each model's check status and offers **Check G
 **WebGPU** keeps the GPU even after a mismatch, with a warning; explicit **WASM** skips the check.
 See [findings](docs/findings.md#phones-the-gpu-can-compute-wrong-results) for measurements and limits.
 
+Use this checklist on the phone; these behaviors have been checked in browser emulation, but still need
+real-device verification. If a step differs, note the phone, browser, orientation and what appeared.
+
+1. **First visit:** start a fresh private browsing session without a `?target=` parameter. Expect **Vortex lamp**,
+   **Rig vortex** and **Particles**. Tap **Vortex lamp**, then **Camera**, allowing camera access.
+   After loading, the live mask and key measurements should fit without scrolling. If the camera is
+   denied, allow it in the browser's site settings and tap **Camera** again; if the view is clipped,
+   capture a screenshot and the browser's zoom setting.
+2. **Framing and level:** on iPhone, allow motion access when prompted by the **Camera** tap.
+   Expect **Fit the lamp between the lines** until orientation locks (the guide may disappear quickly).
+   Hold the lamp at about 70 % of the frame width, then gently tilt the phone: **Phone tilt** should be
+   green through 10 degrees, amber through 15, and red above 15. If it says
+   **Tilt unavailable: point camera forward**, point it forward. If no level appears, check motion
+   permission; the guide still works without sensor access. If the level disagrees with the camera
+   image, record the angle and orientation; sensor-to-camera alignment is still unverified.
+3. **GPU check:** with **Advanced** open, leave **Backend** on **Auto (WebGPU → WASM)**. On a healthy
+   WebGPU phone, expect **GPU verified** and no CPU notice. If the GPU disagrees, expect
+   **The GPU gave different results. Using the CPU for accurate analysis.** above the video and
+   **GPU mismatch; using CPU** in Advanced. **CPU; GPU not checked** is also normal without WebGPU.
+   If the mask looks wrong, choose **WASM (CPU)**; **Check GPU again** retries the comparison in Auto.
+   Particle models are not checked automatically. See the [GPU limits](docs/findings.md#phones-the-gpu-can-compute-wrong-results).
+4. **Landscape:** close **Advanced** and turn the phone sideways. The live video, key card and **Finish**
+   should remain on screen without scrolling. If they do not, record a screenshot in both orientations
+   and the browser's zoom setting; return to portrait to continue.
+5. **Finish and share:** after several seconds of analysis, tap **Finish**. Expect the last frame,
+   **Session finished** and **Camera session summary**, with the camera released. Tap **Share** and
+   choose a destination: it should receive the recap's numbers. Without native sharing, expect
+   **Copied** and paste to check the text. If sharing or copying fails, note the displayed error and
+   use **Download results (.json)**. If the recap says too few frames, tap **Camera**, wait longer and
+   finish again; if the camera stays active, close the tab and report it.
+6. **Return and links:** reopen the same address in the same tab/profile. **Vortex lamp** should stay
+   selected, leaving just **Camera** to tap. Open `?target=vortex` or `?target=particles` to check that
+   a link overrides the remembered subject with **Rig vortex** or **Particles** (particles waits for a
+   source before downloading). If it does not, check the URL spelling and whether browser storage is
+   blocked or the private session ended; selecting the subject manually still works.
+
+See [lamp limits](docs/findings.md#the-vortex-lamp-model) for the untested sensor alignment and phone
+performance, and for the model's framing and tilt limits. A green level or a passed GPU check does not
+guarantee an accurate mask.
+
 ## Commands
 
 ```bash
