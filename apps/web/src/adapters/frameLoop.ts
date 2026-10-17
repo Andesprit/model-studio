@@ -41,7 +41,7 @@ interface Slot {
 export class FrameLoop {
   private renderer: Renderer;
   private slots: (Slot | null)[] = [];
-  /** Pipeline loaded by the user (step 3); runs on every model's results together. */
+  /** Pipeline loaded by the user in Advanced; runs on every model's results together. */
   private pipeline: PipelineRunner | null = null;
   /** Each slot's own pipeline (e.g. embedded in its model); runs on that model's output only. Kept apart from
    * the slot so turning a model off and on keeps its pipeline. */

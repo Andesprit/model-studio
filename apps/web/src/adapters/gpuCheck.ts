@@ -2,7 +2,7 @@ import { toTensor, type InputConfig, type Tensor } from "@detect/core";
 import { inferConfig } from "../loaders";
 import { createRuntime, errorMessage, type BackendPreference, type ModelRuntime } from "./runtime";
 
-// .atelier/goal/evidence/gpu-check/separation.json: healthy <=0.0129, simulated faults >=0.2225.
+// Local output comparisons: healthy scaled RMS <=0.0129, simulated faults >=0.2225.
 // Calibrated on one Intel GPU; this is a gross-error check, not proof of GPU correctness.
 const GPU_ERROR_THRESHOLD = 0.05;
 const MAX_CHECK_BYTES = 3_000_000;

@@ -49,6 +49,13 @@ Measurements start over (a pipeline is reset) when the video loops or you seek b
 video or camera, change a model, or change the calibration. A paused video re-analyzes the same frame
 when a setting changes, but that frame isn't counted twice.
 
+With a pipeline running (embedded or loaded in **Advanced → Pipeline**), a video plays once. When a video
+with an embedded pipeline ends, **Video summary** shows the analyzed time span, analyzed and skipped
+frames, thickness or particle count statistics, and latest breathing readings. Fewer than six analyzed
+frames shows a short note instead.
+The summary uses the same pipeline statistics as **Download results** and clears on replay, seeking or
+a reset. Detector-only video playback still loops; the live camera has no end-of-video summary.
+
 ## Models and how they're configured
 
 The app needs three things to use an ONNX model: how to prepare the image for it, how to read its output,
@@ -97,7 +104,7 @@ can carry its own **inside the `.onnx`** (metadata key `model-studio.pipeline`),
 |---|---|---|
 | `vortex_detector_fp32_with_pipeline.onnx` | `vortex` | `pipelines/vortex.pipeline.js` |
 | `particle_detector_with_tracking.onnx` | `tracking` | `pipelines/tracking.pipeline.js` |
-| `particle_detector.onnx` | none (detection only) | `pipelines/particles.pipeline.js` can be loaded on top in step 3 |
+| `particle_detector.onnx` | none (detection only) | `pipelines/particles.pipeline.js` can be loaded in **Advanced → Pipeline** |
 | `vortex_lamp_auto_fp16.onnx`, `vortex_lamp_auto_fp32.onnx` | `vortex-lamp` | `pipelines/lamp.pipeline.js` |
 
 Each model's pipeline runs on that model's output only. A model opened from disk asks before running its

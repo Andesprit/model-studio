@@ -5,8 +5,13 @@ const isTarget = (value: string | null): value is Target => value === "lamp" || 
 
 /** A shared link wins over the last subject chosen on this device. */
 export function readInitialTarget(): Target | null {
-  const linked = new URL(location.href).searchParams.get("target");
+  const url = new URL(location.href);
+  const linked = url.searchParams.get("target");
   if (isTarget(linked)) return linked;
+  if (linked !== null) {
+    url.searchParams.delete("target");
+    history.replaceState(history.state, "", url);
+  }
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     return isTarget(saved) ? saved : null;

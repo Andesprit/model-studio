@@ -39,7 +39,7 @@ export default {
 
 | Field | What it is |
 |---|---|
-| `ctx.calibration` | `null`, or `{ pixels, amount, unit, unitsPerPixel }` from step 5 |
+| `ctx.calibration` | `null`, or `{ pixels, amount, unit, unitsPerPixel }` from **Advanced → Calibration** |
 | `ctx.options` | the pipeline's `defaults` |
 | `ctx.labels` | the model's class names |
 | `ctx.lib.createTracker({ maxDistance, maxMissed, maxGrowth, sameClass })` | the tracker: `update(boxes, time)` gives each box a `trackId`; `total`, `active` |
@@ -49,8 +49,8 @@ export default {
 `height`.
 
 **`result`** (in `step`): what the decoder produced, in video pixels: `boxes`, `masks`, `segmentation`,
-`poses`, `classes`. A step-3 pipeline also gets a third argument, `models`, with each model's result
-separately (`models.A`, `models.B`).
+`poses`, `classes`. A pipeline loaded in **Advanced → Pipeline** also gets a third argument, `models`,
+with each model's result separately (`models.A`, `models.B`).
 
 ## What it returns
 
@@ -81,7 +81,8 @@ create(ctx) {
 - Keys are the model's input names, and values are float32 tensors (`dims`, `data`).
 - Any input that isn't supplied gets zeros of its declared shape. That includes the first frame, before the
   pipeline has an instance, and the first frame after a rewind.
-- Only a model's own (embedded) pipeline is asked; a step-3 pipeline's `feeds()` is ignored.
+- Only a model's own (embedded) pipeline is asked; `feeds()` is ignored for a pipeline loaded in
+  **Advanced → Pipeline**.
 
 The lamp pipeline uses this to run its model's network once per frame instead of twice
 (`pipelines/lamp.pipeline.js`).
