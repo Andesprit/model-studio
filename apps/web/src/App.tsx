@@ -8,6 +8,7 @@ import { readInitialTarget, rememberTarget, type Target } from "./subjects";
 import { CalibrationLine, lineLength, type Line } from "./ui/CalibrationLine";
 import { ConfigEditor, OptionField, SHOW_OPTIONS } from "./ui/ConfigEditor";
 import { KeyMetrics } from "./ui/KeyMetrics";
+import { FramingGuide, requestMotionPermission } from "./ui/FramingGuide";
 
 interface Sample {
   name: string;
@@ -99,6 +100,7 @@ export function App() {
   const streamRef = useRef<MediaStream | null>(null);
 
   const [source, setSource] = useState<Source>(null);
+  const [motionAllowed, setMotionAllowed] = useState(false);
   const [target, setTarget] = useState<Target | null>(readInitialTarget);
   const [sourceName, setSourceName] = useState("");
   const [aspect, setAspect] = useState(16 / 9);
@@ -402,6 +404,8 @@ export function App() {
   }
 
   async function startCamera() {
+    const motionPermission = target === "lamp" ? requestMotionPermission() : null;
+    if (motionPermission) void motionPermission.then(setMotionAllowed);
     startSelectedTarget();
     stopSource();
     setError("");
@@ -537,7 +541,13 @@ export function App() {
               onLine={(l) => { setCalLine(l); setDrawingLine(false); }}
             />
             {!source && <div className="placeholder">{hasSelection ? "Choose Camera or Video file to see the analysis." : "Start by choosing a subject above."}</div>}
-            {loading && <div className="loading-status" role="status">Loading {models.filter((m) => m.loading).map((m) => m.name).join(", ")}...</div>}
+            <div className="stage-notices">
+              {loading && <div className="loading-status" role="status">Loading {models.filter((m) => m.loading).map((m) => m.name).join(", ")}...</div>}
+              {target === "lamp" && source === "camera" && <FramingGuide
+                locked={stats?.metrics?.["vortex orientation"] === "vertical" || stats?.metrics?.["vortex orientation"] === "horizontal"}
+                motionAllowed={motionAllowed}
+              />}
+            </div>
           </div>
           {source && (stats && active.length > 0
             ? <KeyMetrics metrics={stats.metrics} detections={stats.detections} showParticles={active.some((m) => m.config?.decoder === "yolo-detect")} />

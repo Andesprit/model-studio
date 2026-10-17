@@ -50,7 +50,12 @@ and open http://localhost:5173. Choose a subject to download its model; a fresh 
 2. Tap **Camera** or **Video file**, even while the model is loading. The mask or detections and key
    measurements appear together. Videos must be H.264 MP4 (see [findings](docs/findings.md#video-formats)).
    For the lamp, hold the phone upright with the lamp about 70 % of the frame's width
-   ([why](docs/findings.md#the-vortex-lamp-model)). Rig vortex and Particles also offer **Try an example**;
+   ([why](docs/findings.md#the-vortex-lamp-model)). The lamp camera shows framing lines until orientation
+   locks. If motion access is available, **Phone tilt** stays visible: green through 10 degrees, amber
+   through 15, then red. A phone pointed steeply up or down shows that tilt is unavailable. Motion
+   permission uses the same Camera tap; denial leaves the guide working. The level uses the phone sensor,
+   not the mask, and its alignment has not been tested on a real phone.
+   Rig vortex and Particles also offer **Try an example**;
    the rig's Video 10 and 11 switch on both rig models. More test clips are in `videos/`.
 3. **Download results (.json)** saves everything measured, with one section per model.
    **All measurements and timing** opens the full metric list, backend and per-frame costs.
