@@ -1,7 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { TrendBuffer, trendPath } from "../src/ui/trend";
+import { TrendBuffer, trendPath, trendWindow } from "../src/ui/trend";
 
 describe("measurement trend", () => {
+  it("fills the chart for a short clip and labels its observed span", () => {
+    const points = [{ t: 1.2, value: 2 }, { t: 3.2, value: 4 }, { t: 5.2, value: 3 }];
+    expect(trendPath(points)).toBe("M2.0,31.0 L150.0,3.0 L298.0,17.0");
+    expect(trendWindow(points)).toEqual({ span: 4, label: "last 4 s" });
+  });
+
+  it("labels a rolling camera window as ten seconds and handles a single point", () => {
+    expect(trendWindow([{ t: 12.04, value: 1 }, { t: 22, value: 2 }]).label).toBe("last 10 s");
+    expect(trendWindow([{ t: 1, value: 2 }, { t: 1.25, value: 3 }]).label).toBe("last 0.25 s");
+    expect(trendWindow([])).toEqual({ span: 0, label: "last 0 s" });
+    expect(trendPath([{ t: 1, value: 2 }])).toBe("M298.0,17.0");
+    expect(trendPath([])).toBe("");
+  });
+
   it("keeps ten seconds of distinct analyzed frames, not paused repeats", () => {
     const buffer = new TrendBuffer();
     for (let t = 0; t <= 12; t++) buffer.add(t, { "vortex thickness cm": t }, 0);

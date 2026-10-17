@@ -45,9 +45,9 @@ export function SummaryCard({ models, title = "Video summary" }: { models: Model
   return <section className="run-summary" aria-label={title}>
     <div className="summary-actions">
       <h2>{title}</h2>
+      <p role="status" className={status === "Copied" ? undefined : "share-error"}>{status}</p>
       <button onClick={share} disabled={sharing}>Share</button>
     </div>
-    <p role="status">{status}</p>
     {models.map(({ name, summary: s }, i) => {
       const { time, rows } = summaryDetails(s);
       return <div className="model-summary" key={i}>
