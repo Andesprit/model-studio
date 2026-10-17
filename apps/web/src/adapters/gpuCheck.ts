@@ -1,6 +1,8 @@
 import { toTensor, type InputConfig, type Tensor } from "@detect/core";
 import { inferConfig } from "../loaders";
 import { createRuntime, errorMessage, type BackendPreference, type ModelRuntime } from "./runtime";
+import { createWorkerRuntime } from "./workerRuntime";
+import { createSessionRuntime } from "./ortSession";
 
 // Local output comparisons: healthy scaled RMS <=0.0129, simulated faults >=0.2225.
 // Calibrated on one Intel GPU; this is a gross-error check, not proof of GPU correctness.
@@ -103,12 +105,28 @@ export async function createCheckedRuntime(bytes: Uint8Array, preference: Backen
   let cpu: ModelRuntime | undefined;
   let agrees: boolean;
   try {
-    cpu = await createRuntime(bytes, "wasm");
     const input = syntheticInput(inferConfig(bytes, rt.input).config.input);
+    const workerInput = { dims: [...input.dims], data: input.data.slice() };
     // runtime.run zero-fills every other input, including mode=0 (both lamp branches).
-    const actual = await rt.run(input);
-    const reference = await cpu.run(input);
-    agrees = gpuOutputsAgree(actual, reference);
+    const actual = rt.run(input);
+    const reference = (async () => {
+      try {
+        cpu = await createWorkerRuntime(bytes);
+        return await cpu.run(workerInput);
+      } catch {
+        await cpu?.release();
+        cpu = undefined;
+        // A worker has its own ORT instance. Page-side fallback must wait for the GPU run.
+        await actual;
+        cpu = await createSessionRuntime(bytes, "wasm");
+        return await cpu.run(input);
+      }
+    })();
+    // Drain both branches on errors before releasing sessions or leaving changeModels.
+    const [gpuResult, cpuResult] = await Promise.allSettled([actual, reference]);
+    if (gpuResult.status === "rejected") throw gpuResult.reason;
+    if (cpuResult.status === "rejected") throw cpuResult.reason;
+    agrees = gpuOutputsAgree(gpuResult.value, cpuResult.value);
   } catch (e) {
     await cpu?.release();
     return { runtime: rt, verification: { status: "not-checked", label: `GPU not checked: ${errorMessage(e)}`,
@@ -117,8 +135,8 @@ export async function createCheckedRuntime(bytes: Uint8Array, preference: Backen
   writeGpuVerdict(key, agrees ? "ok" : "cpu");
   if (!agrees && preference === "auto") {
     await rt.release();
-    return { runtime: cpu, verification: verification("fallback") };
+    return { runtime: cpu!, verification: verification("fallback") };
   }
-  await cpu.release();
+  await cpu!.release();
   return { runtime: rt, verification: verification(agrees ? "verified" : "mismatch") };
 }
