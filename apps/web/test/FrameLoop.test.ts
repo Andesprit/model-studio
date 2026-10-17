@@ -40,6 +40,42 @@ beforeEach(() => vi.stubGlobal("window", new EventTarget()));
 afterEach(() => { loops.splice(0).forEach((loop) => loop.stop()); vi.unstubAllGlobals(); });
 
 describe("model changes during inference", () => {
+  it("analyzes the latest CPU frame immediately after a busy callback, without queuing old frames", async () => {
+    const { loop, video } = setup();
+    const first = deferred<Record<string, never>>();
+    const run = vi.fn().mockImplementationOnce(() => first.promise).mockResolvedValue({});
+    loop.start();
+    loop.setModel(0, runtime(run), config);
+    const callback = video.requestVideoFrameCallback.mock.calls[0][0] as unknown as () => void;
+    video.currentTime = 1;
+    callback();
+    video.currentTime = 2;
+    callback();
+    expect(run).toHaveBeenCalledOnce();
+    first.resolve({});
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+    await Promise.resolve();
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["paused", "stopped", "gpu"])("does not catch up a %s source", async (kind) => {
+    const { loop, video } = setup();
+    const frame = deferred<Record<string, never>>();
+    const run = vi.fn(() => frame.promise);
+    const model = runtime(run);
+    if (kind === "gpu") model.backend = "webgpu";
+    loop.start();
+    loop.setModel(0, model, config);
+    video.currentTime = 1;
+    (video.requestVideoFrameCallback.mock.calls[0][0] as unknown as () => void)();
+    if (kind === "paused") Object.assign(video, { paused: true });
+    if (kind === "stopped") loop.stop();
+    frame.resolve({});
+    await vi.waitFor(() => expect(run).toHaveResolved());
+    await Promise.resolve();
+    expect(run).toHaveBeenCalledOnce();
+  });
+
   it("refreshes a paused frame after a window resize and removes the listener on stop", async () => {
     const { loop } = setup();
     const model = runtime();
