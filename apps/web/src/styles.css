@@ -83,6 +83,8 @@ main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .key-metrics dd { margin: 2px 0 0; font-size: 16px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .key-metrics p { margin: 4px 0 0; font-size: 12px; }
 .analysis-readings { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.reading-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.session-finished { background: #171a21e8; padding: 6px 8px; border-radius: 5px; font-size: 12px; }
 .measurement-trend { margin-top: 4px; color: var(--muted); font-size: 11px; }
 .measurement-trend b { float: right; color: var(--text); font-variant-numeric: tabular-nums; }
 .measurement-trend svg { display: block; width: 100%; height: 34px; color: var(--accent); }

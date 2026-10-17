@@ -132,6 +132,8 @@ export function App() {
   const [error, setError] = useState("");
   const trend = useRef(new TrendBuffer());
   const [summaries, setSummaries] = useState<ModelSummary[]>([]);
+  const [finishing, setFinishing] = useState(false);
+  const [cameraFinished, setCameraFinished] = useState(false);
 
   function resetReadings() {
     trend.current.clear();
@@ -417,6 +419,7 @@ export function App() {
   }
 
   function stopSource() {
+    setCameraFinished(false);
     resetReadings();
     loopRef.current?.resetPipeline();
     setStats(null);
@@ -429,6 +432,22 @@ export function App() {
     if (v.src) URL.revokeObjectURL(v.src);
     v.removeAttribute("src");
     v.srcObject = null;
+  }
+
+  async function finishCamera() {
+    const stream = streamRef.current;
+    if (!stream || finishing) return;
+    setFinishing(true);
+    await loopRef.current!.finish();
+    // A new source may have been chosen while the last inference was draining.
+    if (streamRef.current === stream) {
+      setSummaries(readSummaries());
+      videoRef.current!.pause();
+      stream.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      setCameraFinished(true);
+    }
+    setFinishing(false);
   }
 
   async function startCamera() {
@@ -446,6 +465,7 @@ export function App() {
       streamRef.current = stream;
       videoRef.current!.srcObject = stream;
       await videoRef.current!.play();
+      loopRef.current!.start();
       setSource("camera");
       setSourceName("");
     } catch (e) {
@@ -469,6 +489,7 @@ export function App() {
     setSourceName(name);
     try {
       await v.play();
+      loopRef.current!.start();
     } catch (e) {
       // The browser can't decode this codec (e.g. MPEG-4 Part 2, H.265, or an .avi container).
       const unsupported = e instanceof DOMException && e.name === "NotSupportedError";
@@ -573,8 +594,9 @@ export function App() {
             />
             {!source && <div className="placeholder">{hasSelection ? "Choose Camera or Video file to see the analysis." : "Start by choosing a subject above."}</div>}
             <div className="stage-notices">
+              {cameraFinished && <div className="session-finished" role="status">Session finished</div>}
               {loading && <div className="loading-status" role="status">Loading {models.filter((m) => m.loading).map((m) => m.name).join(", ")}...</div>}
-              {target === "lamp" && source === "camera" && <FramingGuide
+              {target === "lamp" && source === "camera" && !cameraFinished && <FramingGuide
                 locked={stats?.metrics?.["vortex orientation"] === "vertical" || stats?.metrics?.["vortex orientation"] === "horizontal"}
                 motionAllowed={motionAllowed}
               />}
@@ -584,8 +606,12 @@ export function App() {
             {stats && active.length > 0
               ? <KeyMetrics metrics={stats.metrics} detections={stats.detections} showParticles={active.some((m) => m.config?.decoder === "yolo-detect")} trend={<Sparkline buffer={trend.current} />} />
               : <p className="hint analysis-wait">{loading ? "Your analysis will appear when the model is ready." : "Waiting for the first analyzed frame..."}</p>}
-            {summaries.length > 0 && <SummaryCard models={summaries} />}
-            <button className="download" onClick={downloadResults}>Download results (.json)</button>
+            {summaries.length > 0 && <SummaryCard models={summaries} title={source === "camera" ? "Camera session summary" : "Video summary"} />}
+            <div className="reading-actions">
+              {source === "camera" && !cameraFinished && !loading && stats && modelPipelines.some((def, i) => def && models[i]?.on && models[i]?.runtime) &&
+                <button onClick={finishCamera} disabled={finishing}>{finishing ? "Finishing..." : "Finish"}</button>}
+              <button className="download" onClick={downloadResults} disabled={finishing}>Download results (.json)</button>
+            </div>
           </div>}
         </div>
         {stats && active.length > 0 && (

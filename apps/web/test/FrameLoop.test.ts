@@ -40,6 +40,61 @@ beforeEach(() => vi.stubGlobal("window", new EventTarget()));
 afterEach(() => { loops.splice(0).forEach((loop) => loop.stop()); vi.unstubAllGlobals(); });
 
 describe("model changes during inference", () => {
+  it("finishes the in-flight frame without resetting its pipeline or accepting more frames", async () => {
+    const { loop, video, cb } = setup();
+    const frame = deferred<Record<string, never>>();
+    const model = runtime(vi.fn(() => frame.promise));
+    loop.start();
+    loop.setModel(0, model, config);
+    const reset = vi.spyOn(loop, "resetPipeline");
+    const callback = video.requestVideoFrameCallback.mock.calls[0][0] as unknown as () => void;
+    loop.refresh(); // A pending settings refresh must not start another frame after Finish.
+    let finished = false;
+    const finish = loop.finish().then(() => { finished = true; });
+    callback(); // A browser callback already dispatched before cancellation is harmless.
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    expect(video.cancelVideoFrameCallback).toHaveBeenCalled();
+    frame.resolve({});
+    await finish;
+    expect(cb.onStats).toHaveBeenCalledOnce();
+    expect(reset).not.toHaveBeenCalled();
+    loop.refresh();
+    callback();
+    window.dispatchEvent(new Event("resize"));
+    await Promise.resolve();
+    expect(model.run).toHaveBeenCalledOnce();
+    expect(cb.onStats).toHaveBeenCalledOnce();
+    expect(video.requestVideoFrameCallback).toHaveBeenCalledOnce();
+  });
+
+  it("resumes analysis on start after a finished source", async () => {
+    const { loop, video, cb } = setup();
+    const model = runtime();
+    loop.start();
+    loop.setModel(0, model, config);
+    await loop.finish();
+    loop.resetPipeline();
+    video.currentTime = 0;
+    loop.start();
+    const callback = video.requestVideoFrameCallback.mock.calls.at(-1)![0] as unknown as () => void;
+    callback();
+    await vi.waitFor(() => expect(cb.onStats).toHaveBeenCalledTimes(2));
+    expect(model.run).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps fatal-error handling until Finish has drained a pending inference", async () => {
+    const { loop, cb } = setup();
+    loop.start();
+    loop.setModel(0, runtime(vi.fn(() => new Promise(() => {}))), config);
+    const finish = loop.finish();
+    const error = new WebAssembly.RuntimeError("memory access out of bounds");
+    window.dispatchEvent(Object.assign(new Event("error"), { error }));
+    await finish;
+    expect(cb.onError).toHaveBeenCalledWith(error);
+    expect(cb.onStats).not.toHaveBeenCalled();
+  });
+
   it("analyzes the latest CPU frame immediately after a busy callback, without queuing old frames", async () => {
     const { loop, video } = setup();
     const first = deferred<Record<string, never>>();
