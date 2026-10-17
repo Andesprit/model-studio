@@ -337,6 +337,19 @@ that repo, in `docs/lamp_frames.md` and `docs/model_studio.md`. What matters her
   416×232 (portrait), so how big the tube looks to the model depends only on how much of the frame it fills.
   At about 70 % it matches the training size. The model was trained without zoom, so a much smaller or larger
   lamp gives a worse mask.
+- **Live camera guidance.** The lamp camera draws two light lines at 15% and 85% of the video width,
+  with a framing hint, until the pipeline locks orientation after ten analyzed frames. The guides stay
+  out of video-file and rig/particle workflows. A separate **Phone tilt** reading uses motion-sensor
+  gravity, rotated for the screen orientation (including the older `window.orientation` fallback).
+  Its rounded reading is green through 10 degrees, amber through 15, and red above 15; this is separate
+  from the pipeline's estimate of the rope's tilt. A low-pass filter and at most ten UI updates per second
+  steady the level without rendering React on sensor events or touching the frame loop.
+  If less than half of gravity lies in the screen plane (pointing the phone steeply up or down), it says
+  tilt is unavailable. Without readings, no level appears. On iOS the existing Camera tap requests motion
+  permission; denial or failure silently leaves the framing guide, with no level. The listener is removed
+  when leaving the lamp camera. Synthetic events verify angles, screen rotations and permission paths;
+  **sensor-to-camera alignment is untested on a real phone**. Moving the phone can bias gravity readings,
+  and the level cannot correct a tilted lamp or guarantee a good mask.
 - **Cost: one network pass per frame once the orientation is locked.** A graph keeps no state between frames,
   so the choice lives in the pipeline. The pipeline tells the graph which branch to run through the `mode`
   input (an ONNX If node) and its `feeds()` hook.

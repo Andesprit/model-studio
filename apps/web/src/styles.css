@@ -67,6 +67,16 @@ main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .stage svg.calibration.drawing .hit { cursor: crosshair; }
 .placeholder { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 20px; color: var(--muted); }
 .loading-status { position: absolute; top: 8px; left: 8px; right: 8px; background: #171a21e8; padding: 8px; border-radius: 5px; font-size: 12px; }
+.stage-notices { position: absolute; inset: 0; padding: 8px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; pointer-events: none; }
+.stage-notices .loading-status { position: static; width: 100%; }
+.framing-guide { position: absolute; inset: 0; }
+.framing-lines { position: absolute; inset: 12% 15%; border-left: 1px dashed #ffffffa6; border-right: 1px dashed #ffffffa6; }
+.framing-caption { position: absolute; bottom: 8px; left: 6px; right: 6px; padding: 4px; border-radius: 4px; background: #10131ac9; font-size: 11px; line-height: 1.4; text-align: center; }
+.phone-level { z-index: 1; max-width: 100%; padding: 4px 6px; border: 1px solid currentColor; border-radius: 4px; background: #10131ae8; font-size: 11px; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.phone-level[hidden] { display: none; }
+.phone-level[data-colour="green"] { color: #7ee787; }
+.phone-level[data-colour="amber"] { color: var(--warn); }
+.phone-level[data-colour="red"] { color: var(--err); }
 .key-metrics { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 14px; }
 .key-metrics dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
 .key-metrics dt { color: var(--muted); font-size: 12px; }
