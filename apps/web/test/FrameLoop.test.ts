@@ -306,6 +306,27 @@ describe("analyze first", () => {
     expect(draw.mock.calls[0][0].metrics.t).toBeCloseTo(0.3);
   });
 
+  it("gets the next frame ready while the model runs, with the same results as one frame at a time", async () => {
+    const run = async (overlap: boolean) => {
+      const { loop, video, model, pipeline } = await analyzeSetup(0.1); // frames at 0, 1/30, 2/30, 3/30 s
+      const seenDuringRun: number[] = [];
+      model.run.mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5)); // the model takes a while; a seek takes one tick
+        seenDuringRun.push(video.currentTime);
+        return {};
+      });
+      const report = await loop.analyze(30, () => {}, new AbortController().signal, overlap);
+      return { report, seenDuringRun, times: pipeline.run.mock.calls.map((c) => c[1]) };
+    };
+    const one = await run(false);
+    const both = await run(true);
+    expect(both.times).toEqual(one.times);
+    expect(both.report).toMatchObject({ frames: one.report!.frames });
+    // one at a time, the video still shows the frame being analyzed; overlapped, it has moved on to the next one
+    expect(one.seenDuringRun).toEqual(one.times);
+    expect(both.seenDuringRun.slice(0, -1)).toEqual(one.times.slice(1));
+  });
+
   it("stops when aborted and goes back to live analysis", async () => {
     const { loop, model } = await analyzeSetup(10);
     const abort = new AbortController();

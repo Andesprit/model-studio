@@ -39,6 +39,13 @@ interface Inferred {
   t2: number;
 }
 
+/** Every loaded model's input from one video frame (FrameLoop.prepare). */
+interface Prepared {
+  slotIndex: number[];
+  inputs: { tensor: ReturnType<typeof toTensor>; transform: ModelInput["transform"]; turn: number }[];
+  preMs: number;
+}
+
 /** A frame analyzed in advance (analyze()), kept for playback. The segmentation is stored run-length encoded. */
 interface AnalyzedFrame {
   time: number;
@@ -227,11 +234,14 @@ export class FrameLoop {
 
   /**
    * Analyzes the whole video in advance: seeks to every 1/fps s from the start, paused, and runs the models and
-   * pipelines on each frame in order (the pipelines measure the whole video, as in live playback). Playback then
-   * draws the stored results instead of running the models, so it never lags behind the video. Resolves with what it
-   * did when done; null when aborted or a model, config or pipeline changed meanwhile. Errors are thrown.
+   * pipelines on each frame in order (the pipelines measure the whole video, as in live playback). While the models
+   * run on one frame, the next is already sought and its inputs grabbed (`overlap`; the models and pipelines still
+   * take the frames one at a time, in order, so the results are the same as without it). Playback then draws the
+   * stored results instead of running the models, so it never lags behind the video. Resolves with what it did when
+   * done; null when aborted or a model, config or pipeline changed meanwhile. Errors are thrown.
    */
-  async analyze(fps: number, onProgress: (done: number, total: number) => void, signal: AbortSignal): Promise<AnalysisReport | null> {
+  async analyze(fps: number, onProgress: (done: number, total: number) => void, signal: AbortSignal,
+    overlap = true): Promise<AnalysisReport | null> {
     this.stop();
     this.finished = false;
     await this.inflight;
@@ -253,17 +263,31 @@ export class FrameLoop {
     window.addEventListener("unhandledrejection", this.onRuntimeError);
     try {
       onProgress(0, total);
-      for (let i = 0; i < total; i++) {
-        if (signal.aborted || !slots.some(Boolean)) return null;
+      /** Seeks to frame i and grabs every model's input from it. */
+      const fetchFrame = async (i: number) => {
         const t0 = performance.now();
         await seek(this.video, Math.min(i / fps, this.video.duration));
-        ms.seek += performance.now() - t0;
+        const seekMs = performance.now() - t0;
+        return { time: this.video.currentTime, seekMs, input: this.prepare(slots) };
+      };
+      let next: Promise<Awaited<ReturnType<typeof fetchFrame>>> | null = null;
+      for (let i = 0; i < total; i++) {
+        if (signal.aborted || !slots.some(Boolean)) return null;
+        const frame = await (next ?? fetchFrame(i));
+        next = null;
+        ms.seek += frame.seekMs;
         if (signal.aborted) return null;
-        const done = await this.infer(slots, pipeline, modelPipelines, this.video.currentTime, failed);
+        const running = this.runPrepared(slots, pipeline, modelPipelines, frame.input, frame.time, failed);
+        if (overlap && i + 1 < total) {
+          // The frame's pixels are already copied out, so seeking on to the next one can't change them.
+          next = fetchFrame(i + 1);
+          next.catch(() => {}); // awaited (and thrown) on the next round
+        }
+        const done = await running;
         if (!done) return null;
         const { result, frameWidth, frameHeight, turn, preMs, inferByModel, t2 } = done;
         const postMs = performance.now() - t2;
-        frames.push({ time: this.video.currentTime, ...packSegmentation(result), frameWidth, frameHeight, turn, preMs,
+        frames.push({ time: frame.time, ...packSegmentation(result), frameWidth, frameHeight, turn, preMs,
           inferByModel, postMs });
         ms.prepare += preMs;
         ms.model += inferByModel.reduce((a, b) => a + b, 0);
@@ -391,17 +415,29 @@ export class FrameLoop {
   /** Runs every model and pipeline on the video's current frame; null when a model or pipeline changed meanwhile. */
   private async infer(slots: (Slot | null)[], pipeline: PipelineRunner | null, modelPipelines: (PipelineRunner | null)[],
     timestamp: number, failed: Promise<never>): Promise<Inferred | null> {
+    return this.runPrepared(slots, pipeline, modelPipelines, this.prepare(slots), timestamp, failed);
+  }
+
+  /**
+   * Every model's input from the video's current frame. All are grabbed before any model runs, so all see the same
+   * frame (the video keeps playing while the first model runs); each uses its own input config.
+   */
+  private prepare(slots: (Slot | null)[]): Prepared {
     const slotIndex = slots.flatMap((s, i) => (s ? [i] : []));
-    const loaded = slotIndex.map((i) => slots[i]!);
-    // Grab every model's input before running any of them, so all see the same video frame
-    // (the video keeps playing while the first model runs). Each uses its own input config.
     const t0 = performance.now();
-    const prepared = loaded.map(({ config, grabber }) => {
+    const inputs = slotIndex.map((i) => {
+      const { config, grabber } = slots[i]!;
       const turn = this.turnFor(config);
       const { frame, transform } = grabber.grab(this.video, config.input, turn);
       return { tensor: toTensor(frame, config.input), transform, turn };
     });
-    const preMs = performance.now() - t0;
+    return { slotIndex, inputs, preMs: performance.now() - t0 };
+  }
+
+  /** Runs the models on prepared inputs, then the pipelines; null when a model or pipeline changed meanwhile. */
+  private async runPrepared(slots: (Slot | null)[], pipeline: PipelineRunner | null, modelPipelines: (PipelineRunner | null)[],
+    { slotIndex, inputs: prepared, preMs }: Prepared, timestamp: number, failed: Promise<never>): Promise<Inferred | null> {
+    const loaded = slotIndex.map((i) => slots[i]!);
     const inputs: ModelInput[] = [];
     const inferByModel: number[] = [];
     for (const [i, { runtime, config }] of loaded.entries()) {
