@@ -3,8 +3,10 @@ import type { ModelConfig } from "@detect/core";
 import { FrameLoop } from "../src/adapters/frameLoop";
 import type { ModelRuntime } from "../src/adapters/runtime";
 
+/** The time the mock video shows: its input tensor carries it, so a test can tell frames apart. */
+const shown = vi.hoisted(() => ({ time: 0 }));
 vi.mock("@detect/core", () => ({
-  toTensor: () => ({ dims: [1], data: new Float32Array(1) }),
+  toTensor: () => ({ dims: [1], data: Float32Array.of(shown.time) }),
   decodeAll: () => ({}),
   mergeResults: (results: unknown[]) => results[0] ?? {},
 }));
@@ -242,7 +244,7 @@ describe("analyze first", () => {
     });
     Object.defineProperty(video, "currentTime", {
       get: () => time,
-      set: (t: number) => { time = t; setTimeout(() => target.dispatchEvent(new Event("seeked")), 0); },
+      set: (t: number) => { time = t; shown.time = t; setTimeout(() => target.dispatchEvent(new Event("seeked")), 0); },
     });
     return video;
   }
@@ -325,6 +327,52 @@ describe("analyze first", () => {
     // one at a time, the video still shows the frame being analyzed; overlapped, it has moved on to the next one
     expect(one.seenDuringRun).toEqual(one.times);
     expect(both.seenDuringRun.slice(0, -1)).toEqual(one.times.slice(1));
+  });
+
+  it("runs the model on several frames per call on the GPU, with each frame's own feeds and output", async () => {
+    const run = async (batchSize: number) => {
+      const video = seekableVideo(0.25); // frames at 0 ... 7/30 s
+      const loop = new FrameLoop(video as unknown as HTMLVideoElement, {} as HTMLCanvasElement, { onStats: vi.fn(), onError: vi.fn() });
+      loops.push(loop);
+      const calls: { n: number; mode: number }[] = [];
+      const model: ModelRuntime = {
+        backend: "webgpu", input: { name: "image", type: "float32", shape: [null] }, outputNames: ["y"], release: vi.fn(),
+        // the output is the input, so each frame's output carries that frame's time
+        run: vi.fn(async (t, extra) => {
+          calls.push({ n: t.dims[0], mode: extra!.mode.data[0] });
+          return { y: { dims: [t.dims[0]], data: Float32Array.from(t.data) } };
+        }),
+      };
+      loop.setModel(0, model, config);
+      // like the lamp: both branches (mode 0) until two frames are seen, then one branch (mode 1)
+      let seen = 0;
+      const got: { t: number; output: number; mode: number }[] = [];
+      const pipeline = {
+        feeds: () => ({ mode: { dims: [1], data: Float32Array.of(seen >= 2 ? 1 : 0) } }),
+        run: vi.fn((inputs: { outputs: { y: { data: Float32Array } } }[], t: number) => {
+          got.push({ t, output: inputs[0].outputs.y.data[0], mode: seen >= 2 ? 1 : 0 });
+          seen++;
+          return {};
+        }),
+        reset: vi.fn(), markDropped: vi.fn(), summary: () => ({}),
+      };
+      loop.setModelPipeline(0, pipeline as never);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      calls.length = 0;
+      got.length = 0;
+      seen = 0;
+      const report = await loop.analyze(30, () => {}, new AbortController().signal, true, batchSize);
+      return { report, calls, got };
+    };
+    const one = await run(1);
+    const four = await run(4);
+    expect(four.report).toMatchObject({ batch: 4, frames: 8 });
+    expect(one.report).toMatchObject({ batch: 1, frames: 8 });
+    // every frame's pipeline got that frame's output, as one at a time
+    expect(four.got).toEqual(one.got);
+    for (const g of four.got) expect(g.output).toBeCloseTo(g.t);
+    // frames 0-3 in one call with mode 0; frames 2 and 3 then want mode 1, so they run alone; frames 4-7 in one call
+    expect(four.calls).toEqual([{ n: 4, mode: 0 }, { n: 1, mode: 1 }, { n: 1, mode: 1 }, { n: 4, mode: 1 }]);
   });
 
   it("stops when aborted and goes back to live analysis", async () => {

@@ -737,7 +737,7 @@ export function App() {
               : <p className="hint analysis-wait">{loading ? "Your analysis will appear when the model is ready."
                 : analysis ? "Analyzing the video first; it plays when done." : "Waiting for the first analyzed frame..."}</p>}
             {analysisReport && <p className="hint">
-              Analyzed in advance: {analysisReport.frames} frames at {analysisReport.fps} per second in {analysisReport.seconds} s.
+              Analyzed in advance: {analysisReport.frames} frames at {analysisReport.fps} per second in {analysisReport.seconds} s{analysisReport.batch > 1 ? `, ${analysisReport.batch} frames per model call on the GPU` : ""}.
               Per frame: seek {analysisReport.perFrameMs.seek} ms, prepare {analysisReport.perFrameMs.prepare} ms,
               model {analysisReport.perFrameMs.model} ms, measure {analysisReport.perFrameMs.measure} ms.
             </p>}

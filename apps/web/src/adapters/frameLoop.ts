@@ -1,4 +1,4 @@
-import { decodeAll, mergeResults, toTensor, type ModelConfig, type ModelInput, type PipelineRunner, type Result, type SegmentationMap } from "@detect/core";
+import { decodeAll, mergeResults, toTensor, type ModelConfig, type ModelInput, type PipelineRunner, type Result, type SegmentationMap, type Tensor } from "@detect/core";
 import { FrameGrabber } from "./frameGrabber";
 import { Renderer } from "./renderer";
 import type { ModelRuntime } from "./runtime";
@@ -39,6 +39,13 @@ interface Inferred {
   t2: number;
 }
 
+/** One model's outputs for a frame, computed in a batch, and the extra inputs (feeds) the batch ran with. */
+interface Precomputed {
+  outputs: Record<string, Tensor>;
+  feeds: Record<string, Tensor> | undefined;
+  ms: number;
+}
+
 /** Every loaded model's input from one video frame (FrameLoop.prepare). */
 interface Prepared {
   slotIndex: number[];
@@ -62,9 +69,17 @@ interface AnalyzedFrame {
 /** Frames per second of video that analyze() can analyze; fewer is faster, playback shows the nearest one. */
 export const ANALYZE_RATES = [10, 15, 30] as const;
 
+/**
+ * Frames per model call in analyze(), on the GPU (WebGPU) with one model whose input takes any batch size: the GPU
+ * works on several frames at once. A fixed number, not tuned to any one device.
+ */
+export const ANALYZE_BATCH = 4;
+
 /** What analyze() did: the rate, the frames, the wall time, and the mean time per frame of each step. */
 export interface AnalysisReport {
   fps: number;
+  /** Frames per model call (1: one at a time). */
+  batch: number;
   frames: number;
   seconds: number;
   /** Milliseconds per frame: seeking to the frame, preparing the models' inputs, the models, the pipelines. */
@@ -236,12 +251,13 @@ export class FrameLoop {
    * Analyzes the whole video in advance: seeks to every 1/fps s from the start, paused, and runs the models and
    * pipelines on each frame in order (the pipelines measure the whole video, as in live playback). While the models
    * run on one frame, the next is already sought and its inputs grabbed (`overlap`; the models and pipelines still
-   * take the frames one at a time, in order, so the results are the same as without it). Playback then draws the
+   * take the frames one at a time, in order, so the results are the same as without it). On the GPU, the model runs
+   * on `batchSize` frames per call (see ANALYZE_BATCH; each frame's pipeline still decides its own feeds). Playback then draws the
    * stored results instead of running the models, so it never lags behind the video. Resolves with what it did when
    * done; null when aborted or a model, config or pipeline changed meanwhile. Errors are thrown.
    */
   async analyze(fps: number, onProgress: (done: number, total: number) => void, signal: AbortSignal,
-    overlap = true): Promise<AnalysisReport | null> {
+    overlap = true, batchSize = ANALYZE_BATCH): Promise<AnalysisReport | null> {
     this.stop();
     this.finished = false;
     await this.inflight;
@@ -270,34 +286,53 @@ export class FrameLoop {
         const seekMs = performance.now() - t0;
         return { time: this.video.currentTime, seekMs, input: this.prepare(slots) };
       };
-      let next: Promise<Awaited<ReturnType<typeof fetchFrame>>> | null = null;
-      for (let i = 0; i < total; i++) {
+      const fetchGroup = async (first: number) => {
+        const group = [];
+        for (let i = first; i < Math.min(first + batch, total); i++) group.push(await fetchFrame(i));
+        return group;
+      };
+      // Batching needs one model, on the GPU, whose input takes any batch size.
+      const only = slots.filter(Boolean) as Slot[];
+      const batch = batchSize > 1 && only.length === 1 && only[0].runtime.backend === "webgpu"
+        && only[0].runtime.input.shape?.[0] === null ? batchSize : 1;
+      const slot = slots.findIndex(Boolean);
+      let next: Promise<Awaited<ReturnType<typeof fetchGroup>>> | null = null;
+      for (let i = 0; i < total; i += batch) {
         if (signal.aborted || !slots.some(Boolean)) return null;
-        const frame = await (next ?? fetchFrame(i));
+        const group = await (next ?? fetchGroup(i));
         next = null;
-        ms.seek += frame.seekMs;
         if (signal.aborted) return null;
-        const running = this.runPrepared(slots, pipeline, modelPipelines, frame.input, frame.time, failed);
-        if (overlap && i + 1 < total) {
-          // The frame's pixels are already copied out, so seeking on to the next one can't change them.
-          next = fetchFrame(i + 1);
+        if (overlap && i + batch < total) {
+          // The frames' pixels are already copied out, so seeking on to the next ones can't change them.
+          next = fetchGroup(i + batch);
           next.catch(() => {}); // awaited (and thrown) on the next round
         }
-        const done = await running;
-        if (!done) return null;
-        const { result, frameWidth, frameHeight, turn, preMs, inferByModel, t2 } = done;
-        const postMs = performance.now() - t2;
-        frames.push({ time: frame.time, ...packSegmentation(result), frameWidth, frameHeight, turn, preMs,
-          inferByModel, postMs });
-        ms.prepare += preMs;
-        ms.model += inferByModel.reduce((a, b) => a + b, 0);
-        ms.measure += postMs;
-        onProgress(i + 1, total);
+        let precomputed: Precomputed[] = [];
+        if (group.length > 1) {
+          const feeds = modelPipelines[slot]?.feeds(group[0].time);
+          const t1 = performance.now();
+          const outputs = await Promise.race([only[0].runtime.run(stack(group.map((f) => f.input.inputs[0].tensor)), feeds), failed]);
+          const each = (performance.now() - t1) / group.length;
+          precomputed = unstack(outputs, group.length).map((o) => ({ outputs: o, feeds, ms: each }));
+        }
+        for (const [k, frame] of group.entries()) {
+          ms.seek += frame.seekMs;
+          const done = await this.runPrepared(slots, pipeline, modelPipelines, frame.input, frame.time, failed, precomputed[k]);
+          if (!done) return null;
+          const { result, frameWidth, frameHeight, turn, preMs, inferByModel, t2 } = done;
+          const postMs = performance.now() - t2;
+          frames.push({ time: frame.time, ...packSegmentation(result), frameWidth, frameHeight, turn, preMs,
+            inferByModel, postMs });
+          ms.prepare += preMs;
+          ms.model += inferByModel.reduce((a, b) => a + b, 0);
+          ms.measure += postMs;
+          onProgress(i + k + 1, total);
+        }
       }
       this.replay = frames;
       this.replayFps = fps;
       const per = (v: number) => Math.round(v / total);
-      return { fps, frames: total, seconds: Math.round((performance.now() - start) / 100) / 10,
+      return { fps, batch, frames: total, seconds: Math.round((performance.now() - start) / 100) / 10,
         perFrameMs: { seek: per(ms.seek), prepare: per(ms.prepare), model: per(ms.model), measure: per(ms.measure) } };
     } finally {
       this.analyzing = false;
@@ -436,14 +471,23 @@ export class FrameLoop {
 
   /** Runs the models on prepared inputs, then the pipelines; null when a model or pipeline changed meanwhile. */
   private async runPrepared(slots: (Slot | null)[], pipeline: PipelineRunner | null, modelPipelines: (PipelineRunner | null)[],
-    { slotIndex, inputs: prepared, preMs }: Prepared, timestamp: number, failed: Promise<never>): Promise<Inferred | null> {
+    { slotIndex, inputs: prepared, preMs }: Prepared, timestamp: number, failed: Promise<never>,
+    precomputed?: Precomputed): Promise<Inferred | null> {
     const loaded = slotIndex.map((i) => slots[i]!);
     const inputs: ModelInput[] = [];
     const inferByModel: number[] = [];
     for (const [i, { runtime, config }] of loaded.entries()) {
       const t1 = performance.now();
       // The model's own pipeline can set its other inputs (e.g. which branch of the graph runs).
-      const outputs = await Promise.race([runtime.run(prepared[i].tensor, modelPipelines[slotIndex[i]]?.feeds(timestamp)), failed]);
+      const feeds = modelPipelines[slotIndex[i]]?.feeds(timestamp);
+      // A batch result counts only if the pipeline asks for what the batch ran with (it may have changed its mind
+      // after an earlier frame of the batch, e.g. when the lamp's orientation locks): else this frame runs alone.
+      if (precomputed && i === 0 && sameFeeds(feeds, precomputed.feeds)) {
+        inputs.push({ outputs: precomputed.outputs, config, transform: prepared[i].transform });
+        inferByModel.push(precomputed.ms);
+        continue;
+      }
+      const outputs = await Promise.race([runtime.run(prepared[i].tensor, feeds), failed]);
       inferByModel.push(performance.now() - t1);
       inputs.push({ outputs, config, transform: prepared[i].transform });
     }
@@ -482,6 +526,34 @@ export class FrameLoop {
 
 /** Turning applies only to models whose input canvas is taller than wide (the vortex lamp). */
 const portraitCanvas = (config: ModelConfig) => (config.input?.height ?? 0) > (config.input?.width ?? 0);
+
+/** Same extra model inputs (e.g. the lamp's branch): same names, shapes and values. */
+function sameFeeds(a: Record<string, Tensor> | undefined, b: Record<string, Tensor> | undefined): boolean {
+  const ka = Object.keys(a ?? {});
+  if (ka.length !== Object.keys(b ?? {}).length) return false;
+  return ka.every((k) => {
+    const x = a![k];
+    const y = b![k];
+    return !!y && x.dims.join() === y.dims.join() && x.data.length === y.data.length && x.data.every((v, i) => v === y.data[i]);
+  });
+}
+
+/** Frames' input tensors (batch 1 each) as one batch. */
+function stack(tensors: Tensor[]): Tensor {
+  const size = tensors[0].data.length;
+  const data = new Float32Array(size * tensors.length);
+  tensors.forEach((t, i) => data.set(t.data as Float32Array, i * size));
+  return { dims: [tensors.length, ...tensors[0].dims.slice(1)], data };
+}
+
+/** A batch's outputs per frame; an output without the batch dimension (e.g. a 1 x 1 x 1 x 1 placeholder) is shared. */
+function unstack(outputs: Record<string, Tensor>, n: number): Record<string, Tensor>[] {
+  return Array.from({ length: n }, (_, k) => Object.fromEntries(Object.entries(outputs).map(([name, t]) => {
+    if (t.dims[0] !== n || n === 1) return [name, t];
+    const size = t.data.length / n;
+    return [name, { dims: [1, ...t.dims.slice(1)], data: t.data.slice(k * size, (k + 1) * size) }];
+  })));
+}
 
 /** Resolves once the video shows the frame at `time` (paused). */
 function seek(video: HTMLVideoElement, time: number): Promise<void> {
