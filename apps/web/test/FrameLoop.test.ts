@@ -275,9 +275,9 @@ describe("analyze first", () => {
   it("runs every frame in order once, then plays the stored results without running the model", async () => {
     const { loop, video, cb, model, pipeline, draw } = await analyzeSetup(0.1);
     const progress = vi.fn();
-    const report = await loop.analyze(30, progress, new AbortController().signal);
+    const report = await loop.analyze(30, progress, new AbortController().signal, "seek");
     expect(report).toMatchObject({ fps: 30, frames: 4 });
-    expect(Object.keys(report!.perFrameMs)).toEqual(["seek", "prepare", "model", "measure"]);
+    expect(Object.keys(report!.perFrameMs)).toEqual(["nextFrame", "prepare", "model", "measure"]);
     expect(model.run).toHaveBeenCalledTimes(4); // 0, 1/30, 2/30, 3/30 s
     expect(pipeline.run.mock.calls.map((c) => c[1])).toEqual([0, 1 / 30, 2 / 30, 3 / 30]);
     expect(progress).toHaveBeenLastCalledWith(4, 4);
@@ -297,7 +297,7 @@ describe("analyze first", () => {
 
   it("analyzes fewer frames at a lower rate and shows the nearest one", async () => {
     const { loop, video, model, draw } = await analyzeSetup(0.5);
-    const report = await loop.analyze(10, () => {}, new AbortController().signal);
+    const report = await loop.analyze(10, () => {}, new AbortController().signal, "seek");
     expect(report).toMatchObject({ fps: 10, frames: 6 }); // 0, 0.1 ... 0.5 s
     expect(model.run).toHaveBeenCalledTimes(6);
     loop.start();
@@ -306,10 +306,57 @@ describe("analyze first", () => {
     expect(draw.mock.calls[0][0].metrics.t).toBeCloseTo(0.3);
   });
 
+  it("plays to each wanted time instead of seeking", async () => {
+    const { loop, video, model, pipeline } = await analyzeSetup(0.3);
+    // A 30 fps video playing at PLAY_RATE: each callback shows a frame 4/30 s later (frames dropped at speed).
+    let playing = false;
+    const seeks: number[] = [];
+    const callbacks: ((now: number, meta: { mediaTime: number }) => void)[] = [];
+    let time = 0;
+    Object.defineProperty(video, "currentTime", { get: () => time, set: (t: number) => { seeks.push(t); time = t; setTimeout(() => video.dispatchEvent(new Event("seeked")), 0); } });
+    video.requestVideoFrameCallback = vi.fn((cb) => { callbacks.push(cb); return callbacks.length; }) as never;
+    Object.assign(video, {
+      play: vi.fn(async () => {
+        playing = true;
+        while (playing) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          if (!playing) break;
+          time = Math.round((time + 4 / 30) * 30) / 30;
+          if (time > 0.3) { time = 0.3; playing = false; video.dispatchEvent(new Event("ended")); break; }
+          callbacks.splice(0).forEach((cb) => cb(0, { mediaTime: time }));
+        }
+      }),
+      pause: vi.fn(() => { playing = false; }),
+    });
+    const report = await loop.analyze(10, () => {}, new AbortController().signal, "play");
+    expect(seeks).toEqual([0]); // only the first frame is a seek
+    // wanted 0, 0.1, 0.2, 0.3 s; shown frames are 4/30 s apart, so each is the first one at or after the wanted time:
+    // 0, 4/30, 8/30, and the last frame (0.3 s) when the video ends
+    expect(pipeline.run.mock.calls.map((c) => Math.round((c[1] as number) * 30))).toEqual([0, 4, 8, 9]);
+    expect(report).toMatchObject({ stepping: "play" });
+    expect(model.run).toHaveBeenCalledTimes(report!.frames);
+  });
+
+  it("seeks instead when playing shows no frame (a hidden page)", async () => {
+    const { loop, video, model } = await analyzeSetup(0.2);
+    Object.assign(video, { play: vi.fn(async () => {}), pause: vi.fn() }); // frame callbacks never fire
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let report: Awaited<ReturnType<typeof loop.analyze>> | undefined;
+      const result = loop.analyze(10, () => {}, new AbortController().signal, "play").then((r) => { report = r; });
+      while (report === undefined) await vi.advanceTimersByTimeAsync(100);
+      await result;
+      expect(report).toMatchObject({ stepping: "seek", frames: 3 });
+      expect(model.run).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("stops when aborted and goes back to live analysis", async () => {
     const { loop, model } = await analyzeSetup(10);
     const abort = new AbortController();
-    const result = loop.analyze(30, (done) => { if (done === 2) abort.abort(); }, abort.signal);
+    const result = loop.analyze(30, (done) => { if (done === 2) abort.abort(); }, abort.signal, "seek");
     expect(await result).toBeNull();
     expect(model.run).toHaveBeenCalledTimes(2);
     expect(loop.analyzed).toBe(false);
@@ -317,7 +364,7 @@ describe("analyze first", () => {
 
   it("drops the stored results when a model setting changes", async () => {
     const { loop } = await analyzeSetup(0.05);
-    await loop.analyze(30, () => {}, new AbortController().signal);
+    await loop.analyze(30, () => {}, new AbortController().signal, "seek");
     expect(loop.analyzed).toBe(true);
     loop.setConfig(0, { ...config });
     expect(loop.analyzed).toBe(false);
