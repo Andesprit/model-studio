@@ -138,7 +138,7 @@ can carry its own **inside the `.onnx`** (metadata key `model-studio.pipeline`),
 | `vortex_detector_fp32_with_pipeline.onnx` | `vortex` | `pipelines/vortex.pipeline.js` |
 | `particle_detector_with_tracking.onnx` | `tracking` | `pipelines/tracking.pipeline.js` |
 | `particle_detector.onnx` | none (detection only) | `pipelines/particles.pipeline.js` can be loaded in **Advanced → Pipeline** |
-| `vortex_lamp_auto_fp16.onnx`, `vortex_lamp_auto_fp32.onnx` | `vortex-lamp` | `pipelines/lamp.pipeline.js` |
+| `vortex_lamp_auto_fp16.onnx` | `vortex-lamp` | `pipelines/lamp.pipeline.js` |
 
 Each model's pipeline runs on that model's output only. A model opened from disk asks before running its
 pipeline, since that's code; the app's own models don't ask.

@@ -30,8 +30,7 @@ The models come with the repo, in `apps/web/public/models/`, and the app downloa
 (listed in `apps/web/public/models/index.json`; a `url` there can be relative or any absolute link):
 `vortex_detector_fp32_with_pipeline.onnx` (0.5 MB), `particle_detector.onnx` (39 MB, detection only),
 `particle_detector_with_tracking.onnx` (39 MB, the same detector plus a tracking pipeline) and
-`vortex_lamp_auto_fp16.onnx` (20 MB, the vortex lamp model with its pipeline; `vortex_lamp_auto_fp32.onnx`, 40 MB,
-is the same in float32, listed for comparison).
+`vortex_lamp_auto_fp16.onnx` (20 MB, the vortex lamp model with its pipeline).
 Then:
 
 ```bash
@@ -51,6 +50,13 @@ See [the main path](docs/how-it-works.md#the-main-path) and the [measured before
    `?target=lamp`, `?target=vortex` or `?target=particles` to the page URL.
 2. Tap **Camera** or **Video file**, even while the model is loading. The mask or detections and key
    measurements appear together. Videos must be H.264 MP4 (see [findings](docs/findings.md#video-formats)).
+   After choosing a video file, pick **Analyze first** or **Live**. **Analyze first** analyzes the video at
+   10, 15 or 30 frames per second (10 by default; fewer is faster) with a progress bar and **Cancel**, then plays
+   it with the stored results, showing the nearest analyzed frame, so playback never lags behind on a slow
+   device. Its summary covers the whole video, and a line under it gives the time per frame spent seeking,
+   preparing, in the model and measuring (also in the downloaded results). **Live** plays right
+   away and analyzes as it goes, skipping frames when the device is slow. Changing a model or setting after
+   the analysis, including drawing a calibration line, goes back to live analysis.
    For the lamp, hold the phone upright with the lamp about 70 % of the frame's width
    ([why](docs/findings.md#the-vortex-lamp-model)). The lamp camera shows framing lines until orientation
    locks. If motion access is available, **Phone tilt** stays visible: green through 10 degrees, amber
@@ -73,8 +79,7 @@ See [the main path](docs/how-it-works.md#the-main-path) and the [measured before
 
 Open **Advanced** for the power tools:
 
-- **Models and backend**: every model remains a checkbox, including particles + tracking and the lamp's
-  fp32 comparison. Any combination can run together. A model downloads the first time it is enabled;
+- **Models and backend**: every model remains a checkbox, including particles + tracking. Any combination can run together. A model downloads the first time it is enabled;
   choosing a main target switches the others off. Fewer models is faster. **Load .onnx** opens a model
   from disk and asks before running an embedded pipeline. **Backend** switches between Auto, WebGPU and WASM.
 - **Model config**: the decoder and **Config .json** for each loaded model. Normally these are inferred

@@ -24,7 +24,11 @@ export class Renderer {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
   }
 
-  draw(result: Result, frameWidth: number, frameHeight: number) {
+  /**
+   * `view`: the results are in a picture turned by `view.turn` degrees (clockwise) from the shown video of
+   * view.width x view.height; they are turned back onto it.
+   */
+  draw(result: Result, frameWidth: number, frameHeight: number, view?: { turn: number; width: number; height: number }) {
     const width = Math.max(1, this.canvas.clientWidth);
     const height = Math.max(1, this.canvas.clientHeight);
     const density = Math.min(devicePixelRatio, 2, Math.sqrt(2_000_000 / (width * height)));
@@ -36,7 +40,14 @@ export class Renderer {
     }
     const ctx = this.canvas.getContext("2d")!;
     this.clear();
-    ctx.setTransform(backingWidth / frameWidth, 0, 0, backingHeight / frameHeight, 0, 0);
+    if (view?.turn) {
+      ctx.setTransform(backingWidth / view.width, 0, 0, backingHeight / view.height, 0, 0);
+      ctx.translate(view.width / 2, view.height / 2);
+      ctx.rotate((-view.turn * Math.PI) / 180);
+      ctx.translate(-frameWidth / 2, -frameHeight / 2);
+    } else {
+      ctx.setTransform(backingWidth / frameWidth, 0, 0, backingHeight / frameHeight, 0, 0);
+    }
     // Scale strokes/text with resolution so overlays look the same on 480p and 4K.
     const u = Math.max(1, Math.min(frameWidth, frameHeight) / 400);
 

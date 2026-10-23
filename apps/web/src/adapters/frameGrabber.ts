@@ -7,10 +7,15 @@ export class FrameGrabber {
   private scaled = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(1, 1) : null;
   private scaledCtx = this.scaled?.getContext("2d");
 
-  grab(source: HTMLVideoElement, input: InputConfig): { frame: Frame; transform: Transform } {
+  /**
+   * `turn` (degrees, clockwise) turns the picture before it is placed: results are then in the turned picture's
+   * coordinates (frameWidth x frameHeight of the turned picture) and the renderer turns them back.
+   */
+  grab(source: HTMLVideoElement, input: InputConfig, turn = 0): { frame: Frame; transform: Transform } {
     const sw = source.videoWidth;
     const sh = source.videoHeight;
     if (!sw || !sh) throw new Error("Video has no frame yet");
+    if (turn) return this.grabTurned(source, input, sw, sh, turn);
     // Preserve CPU capture up to 1 MP; GPU downscaling saves full-frame copies on large videos.
     const fast = sw * sh > 1_000_000 && this.scaledCtx;
     const canvas = fast ? this.scaled! : this.canvas;
@@ -28,4 +33,34 @@ export class FrameGrabber {
     const img = ctx.getImageData(0, 0, width, height);
     return { frame: { width, height, data: img.data }, transform: t };
   }
+
+  private grabTurned(source: HTMLVideoElement, input: InputConfig, sw: number, sh: number, turn: number) {
+    const { fw, fh } = turnedSize(sw, sh, turn);
+    const { width, height } = input;
+    const canvas = this.canvas;
+    const ctx = this.ctx;
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    const t = computeTransform(fw, fh, input);
+    const pad = input.padValue ?? PAD_VALUE;
+    ctx.fillStyle = `rgb(${pad},${pad},${pad})`;
+    ctx.fillRect(0, 0, width, height);
+    ctx.save();
+    ctx.translate(t.padX + (fw * t.scaleX) / 2, t.padY + (fh * t.scaleY) / 2);
+    ctx.rotate((turn * Math.PI) / 180);
+    ctx.drawImage(source, (-sw * t.scaleX) / 2, (-sh * t.scaleY) / 2, sw * t.scaleX, sh * t.scaleY);
+    ctx.restore();
+    const img = ctx.getImageData(0, 0, width, height);
+    return { frame: { width, height, data: img.data }, transform: t };
+  }
+}
+
+/** Size of the bounding box of a sw x sh picture turned by `turn` degrees. */
+export function turnedSize(sw: number, sh: number, turn: number) {
+  const r = (turn * Math.PI) / 180;
+  const c = Math.abs(Math.cos(r));
+  const s = Math.abs(Math.sin(r));
+  return { fw: Math.round(sw * c + sh * s), fh: Math.round(sw * s + sh * c) };
 }
