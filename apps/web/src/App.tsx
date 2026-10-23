@@ -108,6 +108,7 @@ export function App() {
   const [sourceName, setSourceName] = useState("");
   const [aspect, setAspect] = useState(16 / 9);
   const [backendPref, setBackendPref] = useState<BackendPreference>("auto");
+  const [diagonalSearch, setDiagonalSearch] = useState(false);
   /** Every model in the list; its index is its slot in the frame loop. */
   const [models, setModels] = useState<ModelEntry[]>([]);
   const modelsRef = useRef<ModelEntry[]>([]);
@@ -656,6 +657,10 @@ export function App() {
             </label>
             <button className="small" disabled={loading} onClick={() => void checkGpuAgain()}>Check GPU again</button>
             <p className="hint">Small models are checked against the CPU once per GPU and model. Large models, including particles, are not checked; choose WASM if results look wrong.</p>
+            <label className="check">
+              <input type="checkbox" checked={diagonalSearch} onChange={(e) => { setDiagonalSearch(e.target.checked); loopRef.current?.setDiagonalSearch(e.target.checked); }} />
+              <span><b>Try 45° turns (experimental)</b>: for the lamp, also test the picture turned ±45° over the first 10 frames with a rope and keep the strongest. Three times the work while it searches.</span>
+            </label>
             <p className="hint">Tick the models to run; they all run on the same frames. A model downloads the first time it is ticked.</p>
             {models.map((m, i) => (
               <label className="check" key={m.key}>

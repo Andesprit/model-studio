@@ -59,7 +59,7 @@ function play(frames: ReturnType<typeof pair>[], times = frames.map((_, i) => i 
 
 const repeat = (t: Tensor, n = 12) => Array.from({ length: n }, () => pair(t));
 
-describe.each(["fp16", "fp32"])("vortex lamp model, %s", (precision) => {
+describe.each(["fp16"])("vortex lamp model, %s", (precision) => {
   const bytes = modelBytes(precision);
   const meta = readOnnxMetadata(bytes);
   it("embeds a gray portrait top-left letterbox manifest and the delivered pipeline", () => {

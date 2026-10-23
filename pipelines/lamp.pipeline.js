@@ -10,6 +10,12 @@
 // It then locks that orientation. Every frame runs one rope branch. It measures the rope along its own axis;
 // after an orientation change, it waits for that branch's mask. A reset (loop, seek back, new video) decides again.
 //
+// A model with no gate (no cell ever equals WATER_OUTSIDE) decides from the rope instead: while deciding it requests
+// both branches (mode 0) and scores each by its rope strength (mean rope probability x share of the rope in its
+// largest piece; the wrong way gives ~0), counting frames where the stronger branch reaches ROPE_MIN. It decides
+// again when the frame's shape changes (the phone turned) or after REDECIDE_FRAMES frames with no rope, and warns
+// "no lamp in view" after LAMP_MISSING_FRAMES frames with no rope. It reports "rope strength" for the app.
+//
 // Cells equal to WATER_OUTSIDE are outside the water. This marker carries stage 1 in the two rope outputs,
 // avoiding extra GPU readbacks. Orientation follows the largest water region's main axis, with squared
 // vertical/horizontal projections summed over the deciding frames. Only the largest rope piece is displayed.
@@ -34,6 +40,9 @@ const TREND_FRAMES = 5;
 const WATER_MIN_FRACTION = 0.01; // smaller regions are too small to count as a lamp in view
 const WATER_MISSING_FRAMES = 5;
 const WATER_OUTSIDE = -10000;
+const ROPE_MIN = 0.005; // rope strength of a lamp in view: lamp frames 0.010-0.10 (median 0.06), rooms with no lamp median 0.001
+const LAMP_MISSING_FRAMES = 5; // no-gate models: frames with no rope before "no lamp in view"
+const REDECIDE_FRAMES = 15; // no-gate models: frames with no rope before the orientation is decided again
 
 export default {
   name: "vortex-lamp",
@@ -42,7 +51,8 @@ export default {
     "water found": "yes when the largest predicted water region covers at least 1% of the visible frame; its green outline shows stage 1",
     "lamp warning": "no lamp in view after five analyzed frames with no or tiny water; clears when water returns",
     "vortex orientation": "which way the rope runs: vertical (the model saw the frame turned) or horizontal (as filmed); locked after 10 analyzed frames with water found",
-    "vortex orientation score": "squared vertical/horizontal projection of the largest water region's main axis, summed over the deciding frames",
+    "vortex orientation score": "squared vertical/horizontal projection of the largest water region's main axis, summed over the deciding frames (no-gate models: rope strength of each branch)",
+    "rope strength": "no-gate models: mean rope probability x share of the rope in its largest piece, of the stronger branch; about 0 with no lamp",
     "vortex tilt deg": "angle between the rope's main axis and the chosen orientation (vertical or horizontal), median of the last 10 analyzed frames",
     "vortex tilt warning": "shown above 15 deg: the masks get worse with tilt and fail around 30-75 deg; hold the phone straighter",
     "vortex present %": "share of the slices across the rope where the rope is seen",
@@ -60,12 +70,15 @@ export default {
   decode(outputs, ctx) {
     const masks = {};
     const scores = {};
+    const strengths = {};
     let water = null;
-    for (const [which, name] of [["vertical", "logits"], ["horizontal", "logits_asis"]]) {
+    const present = [["vertical", "logits"], ["horizontal", "logits_asis"]].filter(([, name]) => outputs[name] && outputs[name].data.length > 1);
+    const gated = present.some(([, name]) => outputs[name].data.some(v => v === WATER_OUTSIDE));
+    for (const [which, name] of present) {
       const t = outputs[name];
-      if (!t || t.data.length <= 1) continue; // the branch that did not run (placeholder)
       const seg = ctx.lib.decode("semantic-seg", { [name]: t }, { outputName: name, mode: "binary", threshold: 0 }).segmentation;
-      if (!water) {
+      if (!gated) strengths[which] = ropeStrength(t, seg);
+      if (gated && !water) {
         // Compare the exact marker on the original tensor, before any resampling.
         water = { ...seg, classes: Uint16Array.from(t.data, v => Number(v !== WATER_OUTSIDE)) };
         keepLargest(water);
@@ -73,13 +86,15 @@ export default {
       keepLargest(seg);
       masks[which] = seg;
     }
+    if (!gated) Object.assign(scores, strengths);
     if (water) {
       const angle = axisTilt(water, false);
       const radians = angle === null ? null : angle * Math.PI / 180;
       scores.vertical = radians === null ? 0 : Math.sin(radians) ** 2;
       scores.horizontal = radians === null ? 0 : Math.cos(radians) ** 2;
     }
-    return { segmentation: masks[better(scores)], lamp: { masks, scores, water } };
+    const strength = gated ? null : Math.max(0, ...Object.values(strengths));
+    return { segmentation: masks[better(scores)], lamp: { masks, scores, water, gated, strength } };
   },
 
   create(ctx) {
@@ -94,6 +109,15 @@ export default {
     let lastT = null;
     let locked = null;
     let missingWater = 0;
+    let gated = null; // unknown until the first frame; false for a model with no gate
+    let shape = null;
+    let missingRope = 0;
+    const decideAgain = () => {
+      locked = null;
+      sums.vertical = 0;
+      sums.horizontal = 0;
+      seen = 0;
+    };
 
     return {
       step(result, frame) {
@@ -102,8 +126,22 @@ export default {
         const lamp = result.lamp;
         if (!lamp) return out;
         const isNew = lastT === null || frame.timestamp > lastT;
+        gated = lamp.gated;
+        const frameShape = `${frame.width}x${frame.height}`;
+        if (shape !== null && frameShape !== shape) decideAgain(); // the phone turned: decide from the new view
+        shape = frameShape;
         const water = lamp.water ? waterRegion(lamp.water, frame) : null;
-        if (!locked && isNew && water?.found) {
+        if (!gated) {
+          out.metrics["rope strength"] = round(lamp.strength, 4);
+          if (isNew) missingRope = lamp.strength >= ROPE_MIN ? 0 : missingRope + 1;
+          if (missingRope >= LAMP_MISSING_FRAMES) {
+            out.metrics["lamp warning"] = "no lamp in view";
+            out.overlays.push({ type: "text", at: { x: frame.width * 0.05, y: frame.height * 0.1 }, text: "no lamp in view", color: "#ff3b3b" });
+          }
+          if (locked && missingRope >= REDECIDE_FRAMES) decideAgain();
+        }
+        const inView = gated ? water?.found : lamp.strength >= ROPE_MIN;
+        if (!locked && isNew && inView) {
           sums.vertical += lamp.scores.vertical;
           sums.horizontal += lamp.scores.horizontal;
           if (++seen >= DECIDE_FRAMES) locked = better(sums);
@@ -152,7 +190,9 @@ export default {
         return out;
       },
       // Water is present in either branch, so deciding costs the same as locked inference.
-      feeds: () => ({ mode: { dims: [1], data: new Float32Array([(locked ?? better(sums)) === "horizontal" ? 2 : 1]) } }),
+      // No gate: both branches while deciding (their rope strengths decide), one once locked.
+      feeds: () => ({ mode: { dims: [1], data: new Float32Array([
+        !locked && gated === false ? 0 : (locked ?? better(sums)) === "horizontal" ? 2 : 1]) } }),
       summary: () => ({
         orientation: locked,
         orientationScores: { ...sums },
@@ -196,6 +236,16 @@ function better(scores) {
   const h = scores.horizontal;
   if (v === undefined) return h === undefined ? null : "horizontal";
   return h === undefined || v >= h ? "vertical" : "horizontal";
+}
+
+/** Mean rope probability over the canvas x share of the rope cells in the largest piece (before keepLargest). */
+function ropeStrength(t, seg) {
+  let sum = 0;
+  for (const v of t.data) sum += 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, v))));
+  const { largestSize } = pieces(seg);
+  let cells = 0;
+  for (const c of seg.classes) if (c && c !== seg.background) cells++;
+  return cells ? (sum / t.data.length) * (largestSize / cells) : 0;
 }
 
 /** Sets every rope cell outside the largest piece to background, in place. */
