@@ -56,6 +56,12 @@ main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .stage { position: relative; width: 100%; background: #000; border-radius: 8px; overflow: hidden; margin: 0 auto; }
 .stage video, .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 .stage canvas { pointer-events: none; }
+.stage-shell { width: 100%; min-width: 0; }
+/* Full screen (or filling the page where only a bare video may go full screen): the stage keeps the video's shape,
+   so the overlay drawn over it stays aligned, and is centred on black. */
+.stage-shell.full { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; background: #000; }
+.stage-shell.full .stage { width: min(100vw, calc(100dvh * var(--aspect))); max-width: none !important; border-radius: 0; }
+.fullscreen-toggle { position: absolute; top: 8px; right: 8px; z-index: 2; opacity: 0.85; }
 .stage svg.calibration { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .stage svg.calibration.drawing { pointer-events: auto; cursor: crosshair; }
 .stage svg.calibration .body { stroke: #00e5ff; stroke-width: 2px; vector-effect: non-scaling-stroke; }

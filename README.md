@@ -50,6 +50,8 @@ See [the main path](docs/how-it-works.md#the-main-path) and the [measured before
    `?target=lamp`, `?target=vortex` or `?target=particles` to the page URL.
 2. Tap **Camera** or **Video file**, even while the model is loading. The mask or detections and key
    measurements appear together. Videos must be H.264 MP4 (see [findings](docs/findings.md#video-formats)).
+   **Full screen** (top right of the video) shows the video with its drawing over the whole screen; on iPhone,
+   where only a bare video may go full screen, it fills the page instead.
    After choosing a video file, pick **Analyze first** or **Live**. **Analyze first** analyzes the video at
    10, 15 or 30 frames per second (10 by default; fewer is faster) with a progress bar and **Cancel**, then plays
    it with the stored results, showing the nearest analyzed frame, so playback never lags behind on a slow

@@ -12,6 +12,7 @@ import { FramingGuide, requestMotionPermission } from "./ui/FramingGuide";
 import { Sparkline } from "./ui/Sparkline";
 import { SummaryCard, type ModelSummary } from "./ui/SummaryCard";
 import { TrendBuffer } from "./ui/trend";
+import { enterFullscreen, exitFullscreen, fullscreenElement, type FullscreenMode } from "./ui/fullscreen";
 
 interface Sample {
   name: string;
@@ -97,6 +98,9 @@ const UNITS: [string, string][] = [
 
 export function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  /** The stage's container, which goes full screen (the video's own full screen would leave the overlay behind). */
+  const shellRef = useRef<HTMLDivElement>(null);
+  const [fullscreen, setFullscreen] = useState<FullscreenMode | null>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const loopRef = useRef<FrameLoop | null>(null);
   const runnerRef = useRef<PipelineRunner | null>(null);
@@ -203,6 +207,36 @@ export function App() {
   }, [modelPipelines, calibration]);
 
   const anyPipeline = !!pipeline || modelPipelines.some((def, i) => !!def && models[i]?.on);
+
+  // Leaving full screen by the browser's own means (Escape, back gesture), or Escape when the stage fills the page.
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onChange = () => { if (!fullscreenElement()) setFullscreen(null); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFullscreen(null); };
+    document.addEventListener("fullscreenchange", onChange);
+    document.addEventListener("webkitfullscreenchange", onChange);
+    if (fullscreen === "page") document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("fullscreenchange", onChange);
+      document.removeEventListener("webkitfullscreenchange", onChange);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [fullscreen]);
+
+  // The overlay is sized to the stage: redraw it once the stage has its new size.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => loopRef.current?.refresh());
+    return () => cancelAnimationFrame(id);
+  }, [fullscreen]);
+
+  async function toggleFullscreen() {
+    if (fullscreen) {
+      await exitFullscreen(); // also after a late answer to a request that timed out
+      setFullscreen(null);
+    } else {
+      setFullscreen(await enterFullscreen(shellRef.current!));
+    }
+  }
 
   /** Saves what the pipelines measured, plus what it was measured on, as one .json file with a section per model. */
   function downloadResults() {
@@ -628,11 +662,15 @@ export function App() {
           </div>
         )}
         <div className={`analysis-view${summaries.length ? " finished" : ""}`}>
+          <div ref={shellRef} className={`stage-shell${fullscreen ? " full" : ""}`} style={{ "--aspect": aspect } as React.CSSProperties}>
           <div className="stage" style={{ aspectRatio: aspect, maxWidth: `calc(var(--stage-height) * ${aspect})` }}>
             <video
               ref={videoRef}
               muted
               playsInline
+              // Its own full-screen button would show the video without the overlay: the stage has one instead.
+              controlsList="nofullscreen"
+              disablePictureInPicture
               // Pipelines measure a single pass; looping would restart their measurements.
               loop={!anyPipeline}
               controls={source === "file" && !analysis}
@@ -685,6 +723,13 @@ export function App() {
                 motionAllowed={motionAllowed}
               />}
             </div>
+            {source && !analysis && (
+              <button className="fullscreen-toggle small" onClick={() => void toggleFullscreen()}
+                aria-label={fullscreen ? "Exit full screen" : "Full screen"}>
+                {fullscreen ? "Exit full screen" : "Full screen"}
+              </button>
+            )}
+          </div>
           </div>
           {source && <div className="analysis-readings">
             {stats && active.length > 0
