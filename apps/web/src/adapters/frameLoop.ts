@@ -22,7 +22,7 @@ export interface FrameLoopCallbacks {
 }
 
 type VideoWithRVFC = HTMLVideoElement & {
-  requestVideoFrameCallback?: (cb: (now: number, meta: { mediaTime: number }) => void) => number;
+  requestVideoFrameCallback?: (cb: () => void) => number;
   cancelVideoFrameCallback?: (id: number) => void;
 };
 
@@ -55,26 +55,13 @@ interface AnalyzedFrame {
 /** Frames per second of video that analyze() can analyze; fewer is faster, playback shows the nearest one. */
 export const ANALYZE_RATES = [10, 15, 30] as const;
 
-/**
- * How analyze() reaches each frame: "play" plays the video (muted, at PLAY_RATE) and pauses on the first frame at or
- * after each wanted time, so the browser decodes in order; "seek" jumps to each time, which decodes again from the
- * last keyframe every time. "play" needs requestVideoFrameCallback.
- */
-export type FrameStepping = "play" | "seek";
-
-/** Playback rate while analyze() plays to the next frame: the frames in between are only decoded, not analyzed. */
-export const PLAY_RATE = 4;
-/** With no frame for this long while playing, analyze() seeks instead (a hidden page gets no frame callbacks). */
-const PLAY_TIMEOUT_MS = 1000;
-
 /** What analyze() did: the rate, the frames, the wall time, and the mean time per frame of each step. */
 export interface AnalysisReport {
   fps: number;
-  stepping: FrameStepping;
   frames: number;
   seconds: number;
-  /** Milliseconds per frame: reaching the frame, preparing the models' inputs, the models, the pipelines. */
-  perFrameMs: { nextFrame: number; prepare: number; model: number; measure: number };
+  /** Milliseconds per frame: seeking to the frame, preparing the models' inputs, the models, the pipelines. */
+  perFrameMs: { seek: number; prepare: number; model: number; measure: number };
 }
 
 /** A loaded model. Replaced (never mutated) on change, so an in-flight frame can tell it went stale. */
@@ -239,14 +226,12 @@ export class FrameLoop {
   }
 
   /**
-   * Analyzes the whole video in advance: steps to every 1/fps s from the start (see FrameStepping; with "play" a
-   * wanted time is the first frame at or after it) and runs the models and pipelines on each frame in order, paused
-   * (the pipelines measure the whole video, as in live playback). Playback then draws the stored results instead of
-   * running the models, so it never lags behind the video. Resolves with what it did when done; null when aborted or
-   * a model, config or pipeline changed meanwhile. Errors are thrown.
+   * Analyzes the whole video in advance: seeks to every 1/fps s from the start, paused, and runs the models and
+   * pipelines on each frame in order (the pipelines measure the whole video, as in live playback). Playback then
+   * draws the stored results instead of running the models, so it never lags behind the video. Resolves with what it
+   * did when done; null when aborted or a model, config or pipeline changed meanwhile. Errors are thrown.
    */
-  async analyze(fps: number, onProgress: (done: number, total: number) => void, signal: AbortSignal,
-    stepping: FrameStepping = "requestVideoFrameCallback" in this.video ? "play" : "seek"): Promise<AnalysisReport | null> {
+  async analyze(fps: number, onProgress: (done: number, total: number) => void, signal: AbortSignal): Promise<AnalysisReport | null> {
     this.stop();
     this.finished = false;
     await this.inflight;
@@ -260,10 +245,8 @@ export class FrameLoop {
     const modelPipelines = [...this.modelPipelines];
     const total = Math.max(1, Math.floor(this.video.duration * fps) + 1);
     const frames: AnalyzedFrame[] = [];
-    const ms = { nextFrame: 0, prepare: 0, model: 0, measure: 0 };
+    const ms = { seek: 0, prepare: 0, model: 0, measure: 0 };
     const start = performance.now();
-    const { loop, playbackRate } = this.video;
-    this.video.loop = false;
     const failed = new Promise<never>((_, reject) => { this.rejectFrame = reject; });
     failed.catch(() => {});
     window.addEventListener("error", this.onRuntimeError);
@@ -272,17 +255,10 @@ export class FrameLoop {
       onProgress(0, total);
       for (let i = 0; i < total; i++) {
         if (signal.aborted || !slots.some(Boolean)) return null;
-        const want = Math.min(i / fps, this.video.duration);
-        const last = frames.at(-1)?.time ?? -1;
-        // Playing can overshoot past a wanted time: that frame was analyzed already.
-        if (want <= last) continue;
         const t0 = performance.now();
-        // A hidden page gets no frame callbacks: seek from then on.
-        if (stepping === "play" && i > 0 && !await playTo(this.video as VideoWithRVFC, want, PLAY_RATE)) stepping = "seek";
-        if (stepping === "seek" || i === 0) await seek(this.video, want);
-        ms.nextFrame += performance.now() - t0;
+        await seek(this.video, Math.min(i / fps, this.video.duration));
+        ms.seek += performance.now() - t0;
         if (signal.aborted) return null;
-        if (this.video.currentTime <= last) break; // the video ended before this time
         const done = await this.infer(slots, pipeline, modelPipelines, this.video.currentTime, failed);
         if (!done) return null;
         const { result, frameWidth, frameHeight, turn, preMs, inferByModel, t2 } = done;
@@ -296,13 +272,10 @@ export class FrameLoop {
       }
       this.replay = frames;
       this.replayFps = fps;
-      const per = (v: number) => Math.round(v / frames.length);
-      return { fps, stepping, frames: frames.length, seconds: Math.round((performance.now() - start) / 100) / 10,
-        perFrameMs: { nextFrame: per(ms.nextFrame), prepare: per(ms.prepare), model: per(ms.model), measure: per(ms.measure) } };
+      const per = (v: number) => Math.round(v / total);
+      return { fps, frames: total, seconds: Math.round((performance.now() - start) / 100) / 10,
+        perFrameMs: { seek: per(ms.seek), prepare: per(ms.prepare), model: per(ms.model), measure: per(ms.measure) } };
     } finally {
-      this.video.pause();
-      this.video.loop = loop;
-      this.video.playbackRate = playbackRate;
       this.analyzing = false;
       this.rejectFrame = null;
       window.removeEventListener("error", this.onRuntimeError);
@@ -486,44 +459,6 @@ function seek(video: HTMLVideoElement, time: number): Promise<void> {
     const timer = setTimeout(done, 3000);
     video.addEventListener("seeked", done);
     video.currentTime = time;
-  });
-}
-
-/**
- * Plays the (muted, paused) video until it shows a frame at or after `time`, then pauses there; also resolves when the
- * video ends first. The browser decodes the frames in between in order instead of from the last keyframe. Resolves
- * false when no frame came for PLAY_TIMEOUT_MS (a hidden page gets no frame callbacks).
- */
-function playTo(video: VideoWithRVFC, time: number, rate: number): Promise<boolean> {
-  return new Promise((resolve, reject) => {
-    let handle = 0;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (ok: boolean) => {
-      video.pause();
-      clearTimeout(timer);
-      video.cancelVideoFrameCallback?.(handle);
-      video.removeEventListener("ended", done);
-      resolve(ok);
-    };
-    const done = () => finish(true);
-    const wait = () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => finish(false), PLAY_TIMEOUT_MS);
-    };
-    const onFrame = (_now: number, meta: { mediaTime: number }) => {
-      if (meta.mediaTime >= time - 1e-3) return done();
-      handle = video.requestVideoFrameCallback!(onFrame);
-      wait();
-    };
-    video.addEventListener("ended", done);
-    handle = video.requestVideoFrameCallback!(onFrame);
-    wait();
-    video.playbackRate = rate;
-    video.play().catch((e) => {
-      clearTimeout(timer);
-      video.removeEventListener("ended", done);
-      reject(e);
-    });
   });
 }
 

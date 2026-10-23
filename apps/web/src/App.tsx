@@ -693,7 +693,7 @@ export function App() {
                 : analysis ? "Analyzing the video first; it plays when done." : "Waiting for the first analyzed frame..."}</p>}
             {analysisReport && <p className="hint">
               Analyzed in advance: {analysisReport.frames} frames at {analysisReport.fps} per second in {analysisReport.seconds} s.
-              Per frame: next frame ({analysisReport.stepping === "play" ? "playing" : "seeking"}) {analysisReport.perFrameMs.nextFrame} ms, prepare {analysisReport.perFrameMs.prepare} ms,
+              Per frame: seek {analysisReport.perFrameMs.seek} ms, prepare {analysisReport.perFrameMs.prepare} ms,
               model {analysisReport.perFrameMs.model} ms, measure {analysisReport.perFrameMs.measure} ms.
             </p>}
             {summaries.length > 0 && <SummaryCard models={summaries} title={source === "camera" ? "Camera session summary" : "Video summary"} />}
