@@ -361,30 +361,37 @@ shrinks the scale automatically when a frame doesn't fit; this app doesn't yet.
 
 ## The vortex lamp model
 
-`vortex_lamp_auto_fp16.onnx` (and its float32 twin `vortex_lamp_auto_fp32.onnx`) comes from the `vortex-detector` repo.
+`vortex_lamp_auto_fp16.onnx` comes from the `vortex-detector` repo.
 Since 2026-10-23 it is a U-Net with an ImageNet-pretrained EfficientNet-Lite0 encoder, trained on the rig plus 350
 hand-labelled lamp frames from seven phone videos, with room photos blended into the water, motion blur, defocus and
-random zoom. Its gate is a small tube network trained on hand-drawn tube outlines (replacing the two water networks,
-whose rule-made outlines clipped the funnel). On 50 never-trained frames in front of a patterned bag it scores rope
-IoU 0.886 through the app (the previous model 0.525). The write-up is in that repo, in `docs/background_augmentation.md`,
+random zoom. It runs with no gate: the earlier water and tube gates clipped the rope or broke on busy backgrounds,
+and this rope network rarely paints outside the tube by itself. On 50 never-trained frames in front of a patterned
+bag it scores rope IoU 0.900 through the app (water gate 0.875, tube gate 0.886, the model before both 0.525). The write-up is in that repo, in `docs/background_augmentation.md`,
 `docs/lamp_frames.md` and `docs/model_studio.md`. What matters here (the orientation and tilt figures below were
 measured on the previous model):
 
 - **Colour.** Any light colour works. The model takes gray, and the app converts frames before the model.
-- **Orientation is chosen automatically.** The network only knows a rope that runs left to right. Turning
-  the frame before the network turned out better than training it on all orientations:
+- **Upright or sideways, chosen automatically.** A landscape picture (a phone held sideways, a webcam) is turned
+  90° before the portrait canvas, so the lamp keeps its size; fitted as it was, it shrank to about a fifth of the
+  canvas width and no model found the rope. Then the pipeline runs the rope both ways for 10 frames with a rope and
+  locks the stronger (rope strength: mean probability × share in the largest piece; the wrong way scores about 0).
+  It decides again when the picture's shape changes or the rope has been gone for 15 frames, and says "no lamp in
+  view" after 5. In a simulated test on the 50 bag frames: upright 0.899, sideways 0.854 (0.001 before). The right
+  way won on 32 of 32 upright and 32 of 32 turned video frames. The network only knows a rope that runs left to
+  right; turning the frame before the network turned out better than training it on all orientations:
 
   | test | turn the frame first | train on all orientations |
   |---|---|---|
   | lamp IoU | 0.92 | 0.86 |
   | rig edge error | 0.81 px | 1.3–1.7 px |
 
-  So the graph runs both ways, and the pipeline locks the better one after 10 frames. That choice was right on
-  every frame tested:
+  With the water gate, the pipeline chose from the water's axis; that choice was right on every frame tested:
   - 30 of 30 held-out lamp frames filmed upright;
   - 30 of 30 of the same frames turned sideways;
   - 156 of 156 frames of a full phone video.
-- **Tilt: keep the phone within about 15° of upright.** The training had no tilt.
+- **Tilt: keep the phone within about 15° of upright.** The training had no tilt. **Try 45° turns** (Advanced,
+  experimental) also tests the picture turned ±45° and keeps the strongest: in simulation a 45° lamp went from
+  IoU 0.01 to 0.64, at three times the work while it searches.
 
   | tilt | 0–10° | 20° | 30° | 45° |
   |---|---|---|---|---|

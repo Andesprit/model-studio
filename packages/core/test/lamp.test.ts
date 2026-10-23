@@ -71,7 +71,7 @@ describe.each(["fp16"])("vortex lamp model, %s", (precision) => {
     expect(lf(meta[PIPELINE_METADATA_KEY])).toBe(lf(readFileSync(pipelineFile, "utf8")));
   });
 
-  it("has exactly two float32 rope outputs with the exact water marker and unused-branch placeholder", async () => {
+  it("has exactly two float32 rope outputs, no gate (no water marker) and the unused-branch placeholder", async () => {
     ort.env.wasm.numThreads = 1;
     const session = await ort.InferenceSession.create(bytes, { executionProviders: ["wasm"] });
     try {
@@ -89,7 +89,7 @@ describe.each(["fp16"])("vortex lamp model, %s", (precision) => {
             expect(Array.from(t.data as Float32Array)).toEqual([0]);
           } else {
             expect(t.dims).toEqual([1, 1, H, W]);
-            expect((t.data as Float32Array).includes(OUTSIDE)).toBe(true);
+            expect((t.data as Float32Array).includes(OUTSIDE)).toBe(false);
           }
           t.dispose();
         }
@@ -98,7 +98,31 @@ describe.each(["fp16"])("vortex lamp model, %s", (precision) => {
   }, 60000);
 });
 
+/** A model with no gate: no cell is the water marker; `strip` puts a horizontal rope across the canvas. */
+function ungated(strip: boolean): Tensor {
+  const t = tensor(new Float32Array(H * W).fill(-4));
+  if (strip) for (let y = 200; y < 214; y++) for (let x = 20; x < 212; x++) t.data[y * W + x] = 4;
+  return t;
+}
+
 describe("lamp pipeline", () => {
+  it("without a gate, runs both branches while deciding and locks the one with the stronger rope", () => {
+    const frames = Array.from({ length: 14 }, () => pair(ungated(false), ungated(true)));
+    const { results, modes } = play(frames);
+    expect(modes.slice(0, 10)).toEqual(Array(10).fill(0));
+    expect(modes.slice(10)).toEqual(Array(4).fill(2));
+    expect(results[13].metrics!["vortex orientation"]).toBe("horizontal");
+    expect(Number(results[13].metrics!["rope strength"])).toBeGreaterThan(0.005);
+    expect(results[13].metrics!["water found"]).toBeUndefined();
+    expect(results[13].metrics!["lamp warning"]).toBeUndefined();
+  });
+
+  it("without a gate, says no lamp in view after five frames with no rope", () => {
+    const { results } = play(Array.from({ length: 6 }, () => pair(ungated(false), ungated(false))));
+    expect(results.slice(0, 4).every(r => r.metrics!["lamp warning"] === undefined)).toBe(true);
+    expect(results[4].metrics!["lamp warning"]).toBe("no lamp in view");
+  });
+
   it("locks vertical using water even when the only rope pixels run horizontally", () => {
     const t = tube(0, -1); // no positive rope pixels
     for (let y = 200; y < 210; y++) for (let x = 90; x < 140; x++) t.data[y * W + x] = 4;

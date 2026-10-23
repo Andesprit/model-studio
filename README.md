@@ -30,8 +30,7 @@ The models come with the repo, in `apps/web/public/models/`, and the app downloa
 (listed in `apps/web/public/models/index.json`; a `url` there can be relative or any absolute link):
 `vortex_detector_fp32_with_pipeline.onnx` (0.5 MB), `particle_detector.onnx` (39 MB, detection only),
 `particle_detector_with_tracking.onnx` (39 MB, the same detector plus a tracking pipeline) and
-`vortex_lamp_auto_fp16.onnx` (20 MB, the vortex lamp model with its pipeline; `vortex_lamp_auto_fp32.onnx`, 40 MB,
-is the same in float32, listed for comparison).
+`vortex_lamp_auto_fp16.onnx` (20 MB, the vortex lamp model with its pipeline).
 Then:
 
 ```bash
@@ -73,8 +72,8 @@ See [the main path](docs/how-it-works.md#the-main-path) and the [measured before
 
 Open **Advanced** for the power tools:
 
-- **Models and backend**: every model remains a checkbox, including particles + tracking and the lamp's
-  fp32 comparison. Any combination can run together. A model downloads the first time it is enabled;
+- **Models and backend**: every model remains a checkbox, including particles + tracking. **Try 45° turns (experimental, off by default)** also tests the lamp picture turned
+  ±45° while deciding. Any combination can run together. A model downloads the first time it is enabled;
   choosing a main target switches the others off. Fewer models is faster. **Load .onnx** opens a model
   from disk and asks before running an embedded pipeline. **Backend** switches between Auto, WebGPU and WASM.
 - **Model config**: the decoder and **Config .json** for each loaded model. Normally these are inferred

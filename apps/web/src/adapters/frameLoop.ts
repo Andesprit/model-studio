@@ -141,7 +141,7 @@ export class FrameLoop {
    * subject keeps its size (the pipeline then decides which way the rope runs), plus the experimental diagonal turn.
    */
   private turnFor(config: ModelConfig): number {
-    if (config.input.height <= config.input.width) return 0;
+    if (!portraitCanvas(config)) return 0;
     const base = this.video.videoWidth > this.video.videoHeight ? 90 : 0;
     return base + (this.diagonal ? this.diag.locked ?? 0 : 0);
   }
@@ -263,7 +263,7 @@ export class FrameLoop {
         const outputs = await Promise.race([runtime.run(prepared[i].tensor, modelPipelines[slotIndex[i]]?.feeds(timestamp)), failed]);
         inferByModel.push(performance.now() - t1);
         inputs.push({ outputs, config, transform: prepared[i].transform });
-        if (this.diagonal && this.diag.locked === null && config.input.height > config.input.width) {
+        if (this.diagonal && this.diag.locked === null && portraitCanvas(config)) {
           await this.searchDiagonal(loaded[i], prepared[i].turn, outputs, failed);
         }
       }
@@ -345,6 +345,9 @@ export class FrameLoop {
     });
   }
 }
+
+/** Turning applies only to models whose input canvas is taller than wide (the vortex lamp). */
+const portraitCanvas = (config: ModelConfig) => (config.input?.height ?? 0) > (config.input?.width ?? 0);
 
 const DIAGONAL_FRAMES = 10;
 const ROPE_MIN = 0.005;
