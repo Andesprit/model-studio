@@ -361,9 +361,14 @@ shrinks the scale automatically when a frame doesn't fit; this app doesn't yet.
 
 ## The vortex lamp model
 
-`vortex_lamp_auto_fp16.onnx` (and its float32 twin `vortex_lamp_auto_fp32.onnx`) comes from the `vortex-detector` repo: the rig's vortex training plus 200 frames
-from five handheld phone videos of a vortex lamp, each under a different light colour. The full write-up is in
-that repo, in `docs/lamp_frames.md` and `docs/model_studio.md`. What matters here:
+`vortex_lamp_auto_fp16.onnx` (and its float32 twin `vortex_lamp_auto_fp32.onnx`) comes from the `vortex-detector` repo.
+Since 2026-10-23 it is a U-Net with an ImageNet-pretrained EfficientNet-Lite0 encoder, trained on the rig plus 350
+hand-labelled lamp frames from seven phone videos, with room photos blended into the water, motion blur, defocus and
+random zoom. Its gate is a small tube network trained on hand-drawn tube outlines (replacing the two water networks,
+whose rule-made outlines clipped the funnel). On 50 never-trained frames in front of a patterned bag it scores rope
+IoU 0.886 through the app (the previous model 0.525). The write-up is in that repo, in `docs/background_augmentation.md`,
+`docs/lamp_frames.md` and `docs/model_studio.md`. What matters here (the orientation and tilt figures below were
+measured on the previous model):
 
 - **Colour.** Any light colour works. The model takes gray, and the app converts frames before the model.
 - **Orientation is chosen automatically.** The network only knows a rope that runs left to right. Turning
@@ -389,8 +394,8 @@ that repo, in `docs/lamp_frames.md` and `docs/model_studio.md`. What matters her
   mask and warns above 15°.
 - **Framing: hold the phone upright, with the lamp about 70 % of the frame's width.** The canvas is a fixed
   416×232 (portrait), so how big the tube looks to the model depends only on how much of the frame it fills.
-  At about 70 % it matches the training size. The model was trained without zoom, so a much smaller or larger
-  lamp gives a worse mask.
+  The model was trained with random zoom: in a simulated distance test the rope IoU stays at 0.85-0.89 with the
+  lamp's crop at 40-100 % of the frame width, 0.75 at 30 % and 0.83 at 120 %; below about 25 % it fails.
 - **Live camera guidance.** The lamp camera draws two light lines at 15% and 85% of the video width,
   with a framing hint, until the pipeline locks orientation after ten analyzed frames. The guides stay
   out of video-file and rig/particle workflows. A separate **Phone tilt** reading uses motion-sensor
