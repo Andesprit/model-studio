@@ -69,6 +69,7 @@ main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .mode-choice, .analysis-progress { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; gap: 10px; padding: 20px; background: #10131ae8; z-index: 1; }
 .mode-choice p, .analysis-progress p { margin: 0; }
 .mode-choice .row { flex-wrap: wrap; }
+.mode-choice .analyze-rate { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .analysis-progress { align-items: center; text-align: center; }
 .analysis-progress progress { width: min(320px, 100%); }
 .loading-status { position: absolute; top: 8px; left: 8px; right: 8px; background: #171a21e8; padding: 8px; border-radius: 5px; font-size: 12px; }

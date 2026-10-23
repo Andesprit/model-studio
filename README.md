@@ -50,9 +50,11 @@ See [the main path](docs/how-it-works.md#the-main-path) and the [measured before
    `?target=lamp`, `?target=vortex` or `?target=particles` to the page URL.
 2. Tap **Camera** or **Video file**, even while the model is loading. The mask or detections and key
    measurements appear together. Videos must be H.264 MP4 (see [findings](docs/findings.md#video-formats)).
-   After choosing a video file, pick **Analyze first** or **Live**. **Analyze first** analyzes every frame
-   (30 per second of video) with a progress bar and **Cancel**, then plays the video with the stored results,
-   so playback never lags behind on a slow device; its summary covers the whole video. **Live** plays right
+   After choosing a video file, pick **Analyze first** or **Live**. **Analyze first** analyzes the video at
+   10, 15 or 30 frames per second (10 by default; fewer is faster) with a progress bar and **Cancel**, then plays
+   it with the stored results, showing the nearest analyzed frame, so playback never lags behind on a slow
+   device. Its summary covers the whole video, and a line under it gives the time per frame spent seeking,
+   preparing, in the model and measuring (also in the downloaded results). **Live** plays right
    away and analyzes as it goes, skipping frames when the device is slow. Changing a model or setting after
    the analysis, including drawing a calibration line, goes back to live analysis.
    For the lamp, hold the phone upright with the lamp about 70 % of the frame's width

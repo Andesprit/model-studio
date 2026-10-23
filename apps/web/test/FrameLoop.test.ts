@@ -275,7 +275,9 @@ describe("analyze first", () => {
   it("runs every frame in order once, then plays the stored results without running the model", async () => {
     const { loop, video, cb, model, pipeline, draw } = await analyzeSetup(0.1);
     const progress = vi.fn();
-    expect(await loop.analyze(progress, new AbortController().signal)).toBe(true);
+    const report = await loop.analyze(30, progress, new AbortController().signal);
+    expect(report).toMatchObject({ fps: 30, frames: 4 });
+    expect(Object.keys(report!.perFrameMs)).toEqual(["seek", "prepare", "model", "measure"]);
     expect(model.run).toHaveBeenCalledTimes(4); // 0, 1/30, 2/30, 3/30 s
     expect(pipeline.run.mock.calls.map((c) => c[1])).toEqual([0, 1 / 30, 2 / 30, 3 / 30]);
     expect(progress).toHaveBeenLastCalledWith(4, 4);
@@ -293,18 +295,29 @@ describe("analyze first", () => {
     expect(cb.onStats).toHaveBeenCalledOnce();
   });
 
+  it("analyzes fewer frames at a lower rate and shows the nearest one", async () => {
+    const { loop, video, model, draw } = await analyzeSetup(0.5);
+    const report = await loop.analyze(10, () => {}, new AbortController().signal);
+    expect(report).toMatchObject({ fps: 10, frames: 6 }); // 0, 0.1 ... 0.5 s
+    expect(model.run).toHaveBeenCalledTimes(6);
+    loop.start();
+    video.currentTime = 0.26; // nearest analyzed frame: 0.3 s
+    (video.requestVideoFrameCallback.mock.calls.at(-1)![0] as unknown as () => void)();
+    expect(draw.mock.calls[0][0].metrics.t).toBeCloseTo(0.3);
+  });
+
   it("stops when aborted and goes back to live analysis", async () => {
     const { loop, model } = await analyzeSetup(10);
     const abort = new AbortController();
-    const result = loop.analyze((done) => { if (done === 2) abort.abort(); }, abort.signal);
-    expect(await result).toBe(false);
+    const result = loop.analyze(30, (done) => { if (done === 2) abort.abort(); }, abort.signal);
+    expect(await result).toBeNull();
     expect(model.run).toHaveBeenCalledTimes(2);
     expect(loop.analyzed).toBe(false);
   });
 
   it("drops the stored results when a model setting changes", async () => {
     const { loop } = await analyzeSetup(0.05);
-    await loop.analyze(() => {}, new AbortController().signal);
+    await loop.analyze(30, () => {}, new AbortController().signal);
     expect(loop.analyzed).toBe(true);
     loop.setConfig(0, { ...config });
     expect(loop.analyzed).toBe(false);

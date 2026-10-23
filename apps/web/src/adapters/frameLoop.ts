@@ -52,8 +52,17 @@ interface AnalyzedFrame {
   postMs: number;
 }
 
-/** Frames per second analyzed by analyze(): a faster video is analyzed every few frames. */
-export const ANALYZE_FPS = 30;
+/** Frames per second of video that analyze() can analyze; fewer is faster, playback shows the nearest one. */
+export const ANALYZE_RATES = [10, 15, 30] as const;
+
+/** What analyze() did: the rate, the frames, the wall time, and the mean time per frame of each step. */
+export interface AnalysisReport {
+  fps: number;
+  frames: number;
+  seconds: number;
+  /** Milliseconds per frame: seeking to the frame, preparing the models' inputs, the models, the pipelines. */
+  perFrameMs: { seek: number; prepare: number; model: number; measure: number };
+}
 
 /** A loaded model. Replaced (never mutated) on change, so an in-flight frame can tell it went stale. */
 interface Slot {
@@ -98,6 +107,7 @@ export class FrameLoop {
   private frameTimes: number[] = [];
   /** Frames analyzed in advance; while set, playback draws these instead of running the models. */
   private replay: AnalyzedFrame[] | null = null;
+  private replayFps = 30;
   private analyzing = false;
 
   constructor(
@@ -216,12 +226,12 @@ export class FrameLoop {
   }
 
   /**
-   * Analyzes the whole video in advance: seeks to every 1/ANALYZE_FPS s from the start, paused, and runs the models
-   * and pipelines on each frame in order (the pipelines measure the whole video, as in live playback). Playback then
-   * draws the stored results instead of running the models, so it never lags behind the video. Resolves true when
-   * done; false when aborted or a model, config or pipeline changed meanwhile. Errors are thrown.
+   * Analyzes the whole video in advance: seeks to every 1/fps s from the start, paused, and runs the models and
+   * pipelines on each frame in order (the pipelines measure the whole video, as in live playback). Playback then
+   * draws the stored results instead of running the models, so it never lags behind the video. Resolves with what it
+   * did when done; null when aborted or a model, config or pipeline changed meanwhile. Errors are thrown.
    */
-  async analyze(onProgress: (done: number, total: number) => void, signal: AbortSignal): Promise<boolean> {
+  async analyze(fps: number, onProgress: (done: number, total: number) => void, signal: AbortSignal): Promise<AnalysisReport | null> {
     this.stop();
     this.finished = false;
     await this.inflight;
@@ -233,8 +243,10 @@ export class FrameLoop {
     const slots = [...this.slots];
     const pipeline = this.pipeline;
     const modelPipelines = [...this.modelPipelines];
-    const total = Math.max(1, Math.floor(this.video.duration * ANALYZE_FPS) + 1);
+    const total = Math.max(1, Math.floor(this.video.duration * fps) + 1);
     const frames: AnalyzedFrame[] = [];
+    const ms = { seek: 0, prepare: 0, model: 0, measure: 0 };
+    const start = performance.now();
     const failed = new Promise<never>((_, reject) => { this.rejectFrame = reject; });
     failed.catch(() => {});
     window.addEventListener("error", this.onRuntimeError);
@@ -242,18 +254,27 @@ export class FrameLoop {
     try {
       onProgress(0, total);
       for (let i = 0; i < total; i++) {
-        if (signal.aborted || !slots.some(Boolean)) return false;
-        await seek(this.video, Math.min(i / ANALYZE_FPS, this.video.duration));
-        if (signal.aborted) return false;
+        if (signal.aborted || !slots.some(Boolean)) return null;
+        const t0 = performance.now();
+        await seek(this.video, Math.min(i / fps, this.video.duration));
+        ms.seek += performance.now() - t0;
+        if (signal.aborted) return null;
         const done = await this.infer(slots, pipeline, modelPipelines, this.video.currentTime, failed);
-        if (!done) return false;
+        if (!done) return null;
         const { result, frameWidth, frameHeight, turn, preMs, inferByModel, t2 } = done;
+        const postMs = performance.now() - t2;
         frames.push({ time: this.video.currentTime, ...packSegmentation(result), frameWidth, frameHeight, turn, preMs,
-          inferByModel, postMs: performance.now() - t2 });
+          inferByModel, postMs });
+        ms.prepare += preMs;
+        ms.model += inferByModel.reduce((a, b) => a + b, 0);
+        ms.measure += postMs;
         onProgress(i + 1, total);
       }
       this.replay = frames;
-      return true;
+      this.replayFps = fps;
+      const per = (v: number) => Math.round(v / total);
+      return { fps, frames: total, seconds: Math.round((performance.now() - start) / 100) / 10,
+        perFrameMs: { seek: per(ms.seek), prepare: per(ms.prepare), model: per(ms.model), measure: per(ms.measure) } };
     } finally {
       this.analyzing = false;
       this.rejectFrame = null;
@@ -274,7 +295,7 @@ export class FrameLoop {
 
   /** Draws the analyzed frame shown at the video's current time. */
   private showReplay(frames: AnalyzedFrame[]) {
-    const t = this.video.currentTime + 0.5 / ANALYZE_FPS;
+    const t = this.video.currentTime + 0.5 / this.replayFps;
     let lo = 0;
     let hi = frames.length - 1;
     while (lo < hi) {

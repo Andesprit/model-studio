@@ -24,9 +24,5 @@
   {
     "name": "Vortex lamp (auto orientation)",
     "url": "vortex_lamp_auto_fp16.onnx"
-  },
-  {
-    "name": "Vortex lamp INT8 (auto orientation)",
-    "url": "vortex_lamp_auto_int8.onnx"
   }
 ]

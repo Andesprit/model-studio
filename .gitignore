@@ -8,4 +8,3 @@ apps/web/public/models/*.onnx
 !apps/web/public/models/particle_detector_with_tracking.onnx
 !apps/web/public/models/vortex_lamp_auto_fp32.onnx
 !apps/web/public/models/vortex_lamp_auto_fp16.onnx
-!apps/web/public/models/vortex_lamp_auto_int8.onnx

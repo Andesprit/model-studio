@@ -1,6 +1,6 @@
 import { DecodeError, makeCalibration, modelKey, PIPELINE_METADATA_KEY, PipelineRunner, readOnnxMetadata, type ModelConfig, type PipelineDefinition } from "@detect/core";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ANALYZE_FPS, FrameLoop, type Stats } from "./adapters/frameLoop";
+import { ANALYZE_RATES, FrameLoop, type AnalysisReport, type Stats } from "./adapters/frameLoop";
 import { errorMessage, webgpuSupported, type BackendPreference, type ModelRuntime } from "./adapters/runtime";
 import { clearGpuVerdicts, createCheckedRuntime, type GpuVerification } from "./adapters/gpuCheck";
 import { checkInputShape, downloadJson, inferConfig, loadConfigFile, loadPipeline, loadPipelineSource } from "./loaders";
@@ -138,8 +138,10 @@ export function App() {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   /** Progress of the analysis in advance (frames), while it runs. */
   const [analysis, setAnalysis] = useState<{ done: number; total: number } | null>(null);
-  /** Frames analyzed in advance for the playing video, or 0 for live analysis. */
-  const [analyzedFrames, setAnalyzedFrames] = useState(0);
+  /** Frames per second of video that Analyze first analyzes. */
+  const [analyzeFps, setAnalyzeFps] = useState<number>(ANALYZE_RATES[0]);
+  /** What Analyze first did for the playing video; null for live analysis. */
+  const [analysisReport, setAnalysisReport] = useState<AnalysisReport | null>(null);
   const analysisAbort = useRef<AbortController | null>(null);
 
   function resetReadings() {
@@ -218,6 +220,8 @@ export function App() {
       calibration,
       // Only the models that were switched on, each with what its own pipeline measured.
       models: models.flatMap((m, i) => (m.on && m.runtime ? [model(i, m.name, m.runtime.backend)] : [])),
+      // Analyze first: the rate, the frames and the time per step.
+      ...(analysisReport && { analysis: analysisReport }),
       // A pipeline loaded in Advanced runs on all models together; its results go here.
       ...(global && { pipeline: global.pipeline.name, ...global.summary() }),
     };
@@ -429,7 +433,7 @@ export function App() {
     analysisAbort.current?.abort();
     analysisAbort.current = null;
     setAnalysis(null);
-    setAnalyzedFrames(0);
+    setAnalysisReport(null);
     loopRef.current?.clearReplay();
     setCameraFinished(false);
     resetReadings();
@@ -516,11 +520,11 @@ export function App() {
     try {
       await loadedMetadata(v);
       if (!Number.isFinite(v.duration)) throw new Error("the video's length is unknown, so it can't be analyzed first; choose Live");
-      const ok = await loopRef.current!.analyze((done, total) => {
+      const report = await loopRef.current!.analyze(analyzeFps, (done, total) => {
         if (analysisAbort.current === abort) setAnalysis({ done, total });
       }, abort.signal);
       if (analysisAbort.current !== abort) return; // another source replaced this one
-      if (!ok) {
+      if (!report) {
         if (!abort.signal.aborted) setError("A model or setting changed during the analysis. Choose the video again.");
         stopSource();
         setSource(null);
@@ -529,7 +533,7 @@ export function App() {
       }
       analysisAbort.current = null;
       setAnalysis(null);
-      setAnalyzedFrames(Math.floor(v.duration * ANALYZE_FPS) + 1);
+      setAnalysisReport(report);
       setSummaries(readSummaries());
       v.currentTime = 0;
       loopRef.current!.start();
@@ -636,8 +640,8 @@ export function App() {
               onResize={readFrameSize}
               onEnded={() => { if (source === "file") setSummaries(readSummaries()); }}
               // Results analyzed in advance cover the whole video, so its summary stays.
-              onPlay={() => { if (!analyzedFrames) setSummaries([]); }}
-              onSeeking={() => { if (!analyzedFrames) setSummaries([]); }}
+              onPlay={() => { if (!analysisReport) setSummaries([]); }}
+              onSeeking={() => { if (!analysisReport) setSummaries([]); }}
             />
             <canvas ref={overlayRef} />
             <CalibrationLine
@@ -655,7 +659,13 @@ export function App() {
                   <button onClick={() => void analyzeFirst(pendingFile)} disabled={loading || !active.length}>Analyze first</button>
                   <button onClick={() => playLive(pendingFile)}>Live</button>
                 </div>
-                <p className="hint"><b>Analyze first:</b> every frame is analyzed before the video plays, so playback is smooth on any device; a slow device takes longer to prepare.</p>
+                <label className="analyze-rate">
+                  Analyze first at
+                  <select value={analyzeFps} onChange={(e) => setAnalyzeFps(Number(e.target.value))}>
+                    {ANALYZE_RATES.map((r) => <option key={r} value={r}>{r} frames per second</option>)}
+                  </select>
+                </label>
+                <p className="hint"><b>Analyze first:</b> the video is analyzed before it plays, so playback is smooth on any device; a slow device takes longer to prepare. Fewer frames per second is faster; playback shows the nearest analyzed frame.</p>
                 <p className="hint"><b>Live:</b> plays right away and analyzes as it goes; a slow device skips frames and the drawing can lag.</p>
                 {(loading || !active.length) && <p className="hint">Analyze first is available once the model has loaded.</p>}
               </div>
@@ -681,7 +691,11 @@ export function App() {
               ? <KeyMetrics metrics={stats.metrics} detections={stats.detections} showParticles={active.some((m) => m.config?.decoder === "yolo-detect")} trend={<Sparkline buffer={trend.current} />} />
               : <p className="hint analysis-wait">{loading ? "Your analysis will appear when the model is ready."
                 : analysis ? "Analyzing the video first; it plays when done." : "Waiting for the first analyzed frame..."}</p>}
-            {analyzedFrames > 0 && <p className="hint">Analyzed in advance: {analyzedFrames} frames at {ANALYZE_FPS} per second.</p>}
+            {analysisReport && <p className="hint">
+              Analyzed in advance: {analysisReport.frames} frames at {analysisReport.fps} per second in {analysisReport.seconds} s.
+              Per frame: seek {analysisReport.perFrameMs.seek} ms, prepare {analysisReport.perFrameMs.prepare} ms,
+              model {analysisReport.perFrameMs.model} ms, measure {analysisReport.perFrameMs.measure} ms.
+            </p>}
             {summaries.length > 0 && <SummaryCard models={summaries} title={source === "camera" ? "Camera session summary" : "Video summary"} />}
             <div className="reading-actions">
               {source === "camera" && !cameraFinished && !loading && stats && modelPipelines.some((def, i) => def && models[i]?.on && models[i]?.runtime) &&
