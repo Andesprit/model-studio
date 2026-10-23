@@ -50,6 +50,11 @@ See [the main path](docs/how-it-works.md#the-main-path) and the [measured before
    `?target=lamp`, `?target=vortex` or `?target=particles` to the page URL.
 2. Tap **Camera** or **Video file**, even while the model is loading. The mask or detections and key
    measurements appear together. Videos must be H.264 MP4 (see [findings](docs/findings.md#video-formats)).
+   After choosing a video file, pick **Analyze first** or **Live**. **Analyze first** analyzes every frame
+   (30 per second of video) with a progress bar and **Cancel**, then plays the video with the stored results,
+   so playback never lags behind on a slow device; its summary covers the whole video. **Live** plays right
+   away and analyzes as it goes, skipping frames when the device is slow. Changing a model or setting after
+   the analysis, including drawing a calibration line, goes back to live analysis.
    For the lamp, hold the phone upright with the lamp about 70 % of the frame's width
    ([why](docs/findings.md#the-vortex-lamp-model)). The lamp camera shows framing lines until orientation
    locks. If motion access is available, **Phone tilt** stays visible: green through 10 degrees, amber
@@ -72,8 +77,7 @@ See [the main path](docs/how-it-works.md#the-main-path) and the [measured before
 
 Open **Advanced** for the power tools:
 
-- **Models and backend**: every model remains a checkbox, including particles + tracking. **Try 45° turns (experimental, off by default)** also tests the lamp picture turned
-  ±45° while deciding. Any combination can run together. A model downloads the first time it is enabled;
+- **Models and backend**: every model remains a checkbox, including particles + tracking. Any combination can run together. A model downloads the first time it is enabled;
   choosing a main target switches the others off. Fewer models is faster. **Load .onnx** opens a model
   from disk and asks before running an embedded pipeline. **Backend** switches between Auto, WebGPU and WASM.
 - **Model config**: the decoder and **Config .json** for each loaded model. Normally these are inferred

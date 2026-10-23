@@ -389,16 +389,18 @@ measured on the previous model):
   - 30 of 30 held-out lamp frames filmed upright;
   - 30 of 30 of the same frames turned sideways;
   - 156 of 156 frames of a full phone video.
-- **Tilt: keep the phone within about 15° of upright.** The training had no tilt. **Try 45° turns** (Advanced,
-  experimental) also tests the picture turned ±45° and keeps the strongest: in simulation a 45° lamp went from
-  IoU 0.01 to 0.64, at three times the work while it searches.
+- **Tilt: the lamp model is trained on tilts up to 45°.** The earlier model had no tilt and failed past about
+  20°; an app-side search over ±45° turns did not hold up in a real webcam test and was removed. The current
+  model was trained with most lamp frames turned by up to ±45° (steeper angles more often), often zoomed out so
+  the whole diagonal lamp is in view. The test round turned by each angle, through the app path:
 
-  | tilt | 0–10° | 20° | 30° | 45° |
-  |---|---|---|---|---|
-  | IoU | 0.90 | 0.76 | 0.39 | 0.16 |
+  | tilt | 0° | 15° | 30° | 45° | -45° |
+  |---|---|---|---|---|---|
+  | before | 0.90 | 0.84 | 0.26 | 0.05 | 0.02 |
+  | now | 0.89 | 0.89 | 0.89 | 0.87 | 0.89 |
 
-  On diagonals the orientation score is no longer reliable either. The pipeline estimates the tilt from the
-  mask and warns above 15°.
+  These are phone photos turned, not real tilted footage. The pipeline still estimates the tilt from the mask
+  and warns above 15°.
 - **Framing: hold the phone upright, with the lamp about 70 % of the frame's width.** The canvas is a fixed
   416×232 (portrait), so how big the tube looks to the model depends only on how much of the frame it fills.
   The model was trained with random zoom: in a simulated distance test the rope IoU stays at 0.85-0.89 with the

@@ -1,4 +1,4 @@
-import { decodeAll, mergeResults, toTensor, type ModelConfig, type ModelInput, type PipelineRunner, type Result, type Tensor } from "@detect/core";
+import { decodeAll, mergeResults, toTensor, type ModelConfig, type ModelInput, type PipelineRunner, type Result, type SegmentationMap } from "@detect/core";
 import { FrameGrabber } from "./frameGrabber";
 import { Renderer } from "./renderer";
 import type { ModelRuntime } from "./runtime";
@@ -25,6 +25,35 @@ type VideoWithRVFC = HTMLVideoElement & {
   requestVideoFrameCallback?: (cb: () => void) => number;
   cancelVideoFrameCallback?: (id: number) => void;
 };
+
+/** One frame's analysis: the result and where to draw it, plus timings. */
+interface Inferred {
+  result: Result;
+  frameWidth: number;
+  frameHeight: number;
+  /** Clockwise turn of the picture the models saw (0 for most models). */
+  turn: number;
+  preMs: number;
+  inferByModel: number[];
+  /** When post-processing started (performance.now()). */
+  t2: number;
+}
+
+/** A frame analyzed in advance (analyze()), kept for playback. The segmentation is stored run-length encoded. */
+interface AnalyzedFrame {
+  time: number;
+  result: Result;
+  runs: Uint32Array | null;
+  frameWidth: number;
+  frameHeight: number;
+  turn: number;
+  preMs: number;
+  inferByModel: number[];
+  postMs: number;
+}
+
+/** Frames per second analyzed by analyze(): a faster video is analyzed every few frames. */
+export const ANALYZE_FPS = 30;
 
 /** A loaded model. Replaced (never mutated) on change, so an in-flight frame can tell it went stale. */
 interface Slot {
@@ -58,12 +87,6 @@ export class FrameLoop {
   };
   /** Set after an error; cleared when the model or config changes. */
   private halted = false;
-  /**
-   * Experimental (Advanced): also try the picture turned by +-45 deg for models on a portrait canvas, over the first
-   * DIAGONAL_FRAMES frames with a rope, and keep the turn with the strongest rope. Off by default.
-   */
-  private diagonal = false;
-  private diag = { locked: null as number | null, sums: new Map<number, number>(), frames: 0, shape: "" };
   /** A refresh was requested while busy; run once more when the current inference finishes. */
   private pending = false;
   /** Only remember that a newer live frame exists, never queue its pixels. */
@@ -73,6 +96,9 @@ export class FrameLoop {
   private onResize = () => this.refresh();
   private handle = 0;
   private frameTimes: number[] = [];
+  /** Frames analyzed in advance; while set, playback draws these instead of running the models. */
+  private replay: AnalyzedFrame[] | null = null;
+  private analyzing = false;
 
   constructor(
     private video: VideoWithRVFC,
@@ -87,6 +113,7 @@ export class FrameLoop {
     while (this.slots.length <= slot) this.slots.push(null);
     const prev = this.slots[slot];
     this.slots[slot] = runtime && config ? { runtime, config, grabber: prev?.grabber ?? new FrameGrabber() } : null;
+    this.replay = null;
     this.resetPipeline();
     this.halted = false;
     this.renderer.clear();
@@ -121,33 +148,24 @@ export class FrameLoop {
     const s = this.slots[slot];
     if (!s) return;
     this.slots[slot] = { ...s, config };
+    this.replay = null;
     this.halted = false;
     this.refresh();
   }
 
-  /** Swap the user pipeline (or remove it with null) without reloading the model. */
-  setDiagonalSearch(on: boolean) {
-    this.diagonal = on;
-    this.resetDiagonal();
-    this.refresh();
-  }
-
-  private resetDiagonal() {
-    this.diag = { locked: null, sums: new Map(), frames: 0, shape: "" };
-  }
-
   /**
    * Clockwise turn (degrees) of the picture for a model: a landscape picture is turned onto a portrait canvas so the
-   * subject keeps its size (the pipeline then decides which way the rope runs), plus the experimental diagonal turn.
+   * subject keeps its size (the pipeline then decides which way the rope runs).
    */
   private turnFor(config: ModelConfig): number {
     if (!portraitCanvas(config)) return 0;
-    const base = this.video.videoWidth > this.video.videoHeight ? 90 : 0;
-    return base + (this.diagonal ? this.diag.locked ?? 0 : 0);
+    return this.video.videoWidth > this.video.videoHeight ? 90 : 0;
   }
 
+  /** Swap the user pipeline (or remove it with null) without reloading the model. */
   setPipeline(pipeline: PipelineRunner | null) {
     this.pipeline = pipeline;
+    this.replay = null;
     this.halted = false;
     this.refresh();
   }
@@ -156,6 +174,7 @@ export class FrameLoop {
   setModelPipeline(slot: number, pipeline: PipelineRunner | null) {
     while (this.modelPipelines.length <= slot) this.modelPipelines.push(null);
     this.modelPipelines[slot] = pipeline;
+    this.replay = null;
     this.halted = false;
     this.refresh();
   }
@@ -196,9 +215,84 @@ export class FrameLoop {
     if (this.finished) this.stop();
   }
 
+  /**
+   * Analyzes the whole video in advance: seeks to every 1/ANALYZE_FPS s from the start, paused, and runs the models
+   * and pipelines on each frame in order (the pipelines measure the whole video, as in live playback). Playback then
+   * draws the stored results instead of running the models, so it never lags behind the video. Resolves true when
+   * done; false when aborted or a model, config or pipeline changed meanwhile. Errors are thrown.
+   */
+  async analyze(onProgress: (done: number, total: number) => void, signal: AbortSignal): Promise<boolean> {
+    this.stop();
+    this.finished = false;
+    await this.inflight;
+    this.replay = null;
+    this.analyzing = true;
+    this.resetPipeline();
+    this.renderer.clear();
+    this.video.pause();
+    const slots = [...this.slots];
+    const pipeline = this.pipeline;
+    const modelPipelines = [...this.modelPipelines];
+    const total = Math.max(1, Math.floor(this.video.duration * ANALYZE_FPS) + 1);
+    const frames: AnalyzedFrame[] = [];
+    const failed = new Promise<never>((_, reject) => { this.rejectFrame = reject; });
+    failed.catch(() => {});
+    window.addEventListener("error", this.onRuntimeError);
+    window.addEventListener("unhandledrejection", this.onRuntimeError);
+    try {
+      onProgress(0, total);
+      for (let i = 0; i < total; i++) {
+        if (signal.aborted || !slots.some(Boolean)) return false;
+        await seek(this.video, Math.min(i / ANALYZE_FPS, this.video.duration));
+        if (signal.aborted) return false;
+        const done = await this.infer(slots, pipeline, modelPipelines, this.video.currentTime, failed);
+        if (!done) return false;
+        const { result, frameWidth, frameHeight, turn, preMs, inferByModel, t2 } = done;
+        frames.push({ time: this.video.currentTime, ...packSegmentation(result), frameWidth, frameHeight, turn, preMs,
+          inferByModel, postMs: performance.now() - t2 });
+        onProgress(i + 1, total);
+      }
+      this.replay = frames;
+      return true;
+    } finally {
+      this.analyzing = false;
+      this.rejectFrame = null;
+      window.removeEventListener("error", this.onRuntimeError);
+      window.removeEventListener("unhandledrejection", this.onRuntimeError);
+    }
+  }
+
+  /** True while playback draws frames analyzed in advance. */
+  get analyzed() {
+    return this.replay !== null;
+  }
+
+  /** Forgets the frames analyzed in advance, e.g. when the source changes. */
+  clearReplay() {
+    this.replay = null;
+  }
+
+  /** Draws the analyzed frame shown at the video's current time. */
+  private showReplay(frames: AnalyzedFrame[]) {
+    const t = this.video.currentTime + 0.5 / ANALYZE_FPS;
+    let lo = 0;
+    let hi = frames.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (frames[mid].time <= t) lo = mid;
+      else hi = mid - 1;
+    }
+    const f = frames[lo];
+    if (!f) return;
+    const result = unpackSegmentation(f.result, f.runs);
+    this.renderer.draw(result, f.frameWidth, f.frameHeight,
+      f.turn ? { turn: f.turn, width: this.video.videoWidth, height: this.video.videoHeight } : undefined);
+    this.report(f.preMs, f.inferByModel, f.postMs, performance.now(), result);
+  }
+
   /** Process the current frame once, e.g. when the video is paused and settings change. */
   refresh() {
-    if (this.finished) return;
+    if (this.finished || this.analyzing) return;
     if (this.busy) this.pending = true;
     else if (this.video.readyState >= 2) void this.run();
   }
@@ -220,6 +314,11 @@ export class FrameLoop {
   }
 
   private run() {
+    if (this.analyzing) return;
+    if (this.replay) {
+      if (this.video.readyState >= 2) this.showReplay(this.replay);
+      return;
+    }
     if (this.busy || this.changingModels || this.halted || !this.slots.some(Boolean) || this.video.readyState < 2) return;
     this.inflight = this.tick([...this.slots], this.pipeline, [...this.modelPipelines]);
   }
@@ -239,52 +338,9 @@ export class FrameLoop {
     const timestamp = this.video.currentTime;
     const failed = new Promise<never>((_, reject) => { this.rejectFrame = reject; });
     try {
-      const slotIndex = slots.flatMap((s, i) => (s ? [i] : []));
-      const loaded = slotIndex.map((i) => slots[i]!);
-      // Grab every model's input before running any of them, so all see the same video frame
-      // (the video keeps playing while the first model runs). Each uses its own input config.
-      const t0 = performance.now();
-      const shape = `${this.video.videoWidth}x${this.video.videoHeight}`;
-      if (this.diagonal && shape !== this.diag.shape) {
-        this.resetDiagonal();
-        this.diag.shape = shape;
-      }
-      const prepared = loaded.map(({ config, grabber }) => {
-        const turn = this.turnFor(config);
-        const { frame, transform } = grabber.grab(this.video, config.input, turn);
-        return { tensor: toTensor(frame, config.input), transform, turn };
-      });
-      const preMs = performance.now() - t0;
-      const inputs: ModelInput[] = [];
-      const inferByModel: number[] = [];
-      for (const [i, { runtime, config }] of loaded.entries()) {
-        const t1 = performance.now();
-        // The model's own pipeline can set its other inputs (e.g. which branch of the graph runs).
-        const outputs = await Promise.race([runtime.run(prepared[i].tensor, modelPipelines[slotIndex[i]]?.feeds(timestamp)), failed]);
-        inferByModel.push(performance.now() - t1);
-        inputs.push({ outputs, config, transform: prepared[i].transform });
-        if (this.diagonal && this.diag.locked === null && portraitCanvas(config)) {
-          await this.searchDiagonal(loaded[i], prepared[i].turn, outputs, failed);
-        }
-      }
-      // A model, config or pipeline swapped mid-frame: drop the stale result (and keep it out of the pipeline's state).
-      if (!this.current(slots, pipeline, modelPipelines)) return;
-      const t2 = performance.now();
-      const own = slotIndex.map((i) => modelPipelines[i]);
-      let result: Result;
-      if (own.some(Boolean)) {
-        // Each model through its own pipeline (or just its decoder), then the user's pipeline on top, if any.
-        const perModel = inputs.map((input, k) => own[k]?.run([input], timestamp) ?? decodeAll([input]));
-        result = pipeline ? pipeline.runDecoded(perModel, inputs, timestamp) : mergeResults(perModel);
-      } else {
-        result = pipeline ? pipeline.run(inputs, timestamp) : decodeAll(inputs);
-      }
-      const { frameWidth, frameHeight } = inputs[0].transform;
-      const turn = prepared[0].turn;
-      if (turn || this.diagonal) {
-        result = { ...result, metrics: { ...result.metrics, "frame turn deg": turn,
-          ...(this.diagonal ? { "diagonal search": this.diag.locked === null ? `searching ${this.diag.frames}/${DIAGONAL_FRAMES}` : `locked ${this.diag.locked} deg` } : {}) } };
-      }
+      const done = await this.infer(slots, pipeline, modelPipelines, timestamp, failed);
+      if (!done) return;
+      const { result, frameWidth, frameHeight, turn, preMs, inferByModel, t2 } = done;
       this.renderer.draw(result, frameWidth, frameHeight,
         turn ? { turn, width: this.video.videoWidth, height: this.video.videoHeight } : undefined);
       const t3 = performance.now();
@@ -311,24 +367,45 @@ export class FrameLoop {
     }
   }
 
-  /**
-   * Experimental diagonal search: run the model on the picture turned by +-45 deg more (both branches, mode 0), score
-   * each turn by its rope strength, and lock the best turn after DIAGONAL_FRAMES frames with a rope.
-   */
-  private async searchDiagonal(slot: Slot, turn: number, main: Record<string, Tensor>, failed: Promise<never>) {
-    const base = turn - (this.diag.locked ?? 0);
-    const scores = new Map<number, number>([[0, ropeStrength(main)]]);
-    for (const extra of [45, -45]) {
-      const { frame } = slot.grabber.grab(this.video, slot.config.input, base + extra);
-      const outputs = await Promise.race([slot.runtime.run(toTensor(frame, slot.config.input), { mode: { dims: [1], data: new Float32Array([0]) } }), failed]);
-      scores.set(extra, ropeStrength(outputs));
+  /** Runs every model and pipeline on the video's current frame; null when a model or pipeline changed meanwhile. */
+  private async infer(slots: (Slot | null)[], pipeline: PipelineRunner | null, modelPipelines: (PipelineRunner | null)[],
+    timestamp: number, failed: Promise<never>): Promise<Inferred | null> {
+    const slotIndex = slots.flatMap((s, i) => (s ? [i] : []));
+    const loaded = slotIndex.map((i) => slots[i]!);
+    // Grab every model's input before running any of them, so all see the same video frame
+    // (the video keeps playing while the first model runs). Each uses its own input config.
+    const t0 = performance.now();
+    const prepared = loaded.map(({ config, grabber }) => {
+      const turn = this.turnFor(config);
+      const { frame, transform } = grabber.grab(this.video, config.input, turn);
+      return { tensor: toTensor(frame, config.input), transform, turn };
+    });
+    const preMs = performance.now() - t0;
+    const inputs: ModelInput[] = [];
+    const inferByModel: number[] = [];
+    for (const [i, { runtime, config }] of loaded.entries()) {
+      const t1 = performance.now();
+      // The model's own pipeline can set its other inputs (e.g. which branch of the graph runs).
+      const outputs = await Promise.race([runtime.run(prepared[i].tensor, modelPipelines[slotIndex[i]]?.feeds(timestamp)), failed]);
+      inferByModel.push(performance.now() - t1);
+      inputs.push({ outputs, config, transform: prepared[i].transform });
     }
-    if (Math.max(...scores.values()) < ROPE_MIN) return;
-    for (const [k, v] of scores) this.diag.sums.set(k, (this.diag.sums.get(k) ?? 0) + v);
-    if (++this.diag.frames >= DIAGONAL_FRAMES) {
-      // the lamp pipeline decides its own orientation again when the turned picture's shape changes
-      this.diag.locked = [...this.diag.sums.entries()].reduce((a, b) => (b[1] > a[1] ? b : a))[0];
+    // A model, config or pipeline swapped mid-frame: drop the stale result (and keep it out of the pipeline's state).
+    if (!this.current(slots, pipeline, modelPipelines)) return null;
+    const t2 = performance.now();
+    const own = slotIndex.map((i) => modelPipelines[i]);
+    let result: Result;
+    if (own.some(Boolean)) {
+      // Each model through its own pipeline (or just its decoder), then the user's pipeline on top, if any.
+      const perModel = inputs.map((input, k) => own[k]?.run([input], timestamp) ?? decodeAll([input]));
+      result = pipeline ? pipeline.runDecoded(perModel, inputs, timestamp) : mergeResults(perModel);
+    } else {
+      result = pipeline ? pipeline.run(inputs, timestamp) : decodeAll(inputs);
     }
+    const { frameWidth, frameHeight } = inputs[0].transform;
+    const turn = prepared[0].turn;
+    if (turn) result = { ...result, metrics: { ...result.metrics, "frame turn deg": turn } };
+    return { result, frameWidth, frameHeight, turn, preMs, inferByModel, t2 };
   }
 
   private report(preMs: number, inferByModel: number[], postMs: number, now: number, r: Result) {
@@ -349,50 +426,43 @@ export class FrameLoop {
 /** Turning applies only to models whose input canvas is taller than wide (the vortex lamp). */
 const portraitCanvas = (config: ModelConfig) => (config.input?.height ?? 0) > (config.input?.width ?? 0);
 
-const DIAGONAL_FRAMES = 10;
-const ROPE_MIN = 0.005;
+/** Resolves once the video shows the frame at `time` (paused). */
+function seek(video: HTMLVideoElement, time: number): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      video.removeEventListener("seeked", done);
+      clearTimeout(timer);
+      resolve();
+    };
+    // Some browsers fire no seeked event when the time doesn't change.
+    const timer = setTimeout(done, 3000);
+    video.addEventListener("seeked", done);
+    video.currentTime = time;
+  });
+}
 
-/** Strongest branch of a rope model's outputs: mean probability x share of the rope in its largest 4-connected piece. */
-function ropeStrength(outputs: Record<string, Tensor>): number {
-  let best = 0;
-  for (const t of Object.values(outputs)) {
-    if (t.data.length <= 1 || t.dims.length !== 4) continue;
-    const h = t.dims[2];
-    const w = t.dims[3];
-    const data = t.data as Float32Array;
-    let sum = 0;
-    const on = new Uint8Array(w * h);
-    let cells = 0;
-    for (let i = 0; i < w * h; i++) {
-      const v = Math.max(-30, Math.min(30, data[i]));
-      sum += 1 / (1 + Math.exp(-v));
-      if (v > 0) {
-        on[i] = 1;
-        cells++;
-      }
-    }
-    if (!cells) continue;
-    let largest = 0;
-    const stack: number[] = [];
-    for (let i = 0; i < on.length; i++) {
-      if (on[i] !== 1) continue;
-      let size = 0;
-      on[i] = 2;
-      stack.push(i);
-      while (stack.length) {
-        const p = stack.pop()!;
-        size++;
-        const x = p % w;
-        for (const q of [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, p - w, p + w]) {
-          if (q >= 0 && q < on.length && on[q] === 1) {
-            on[q] = 2;
-            stack.push(q);
-          }
-        }
-      }
-      largest = Math.max(largest, size);
-    }
-    best = Math.max(best, (sum / (w * h)) * (largest / cells));
+/** The result without its segmentation classes, and the classes as (value, length) runs: a mask is mostly background. */
+function packSegmentation(result: Result): { result: Result; runs: Uint32Array | null } {
+  const s = result.segmentation;
+  if (!s) return { result, runs: null };
+  const runs: number[] = [];
+  const c = s.classes;
+  for (let i = 0; i < c.length;) {
+    let j = i + 1;
+    while (j < c.length && c[j] === c[i]) j++;
+    runs.push(c[i], j - i);
+    i = j;
   }
-  return best;
+  return { result: { ...result, segmentation: { ...s, classes: new Uint16Array(0) } }, runs: Uint32Array.from(runs) };
+}
+
+function unpackSegmentation(result: Result, runs: Uint32Array | null): Result {
+  const s = result.segmentation;
+  if (!s || !runs) return result;
+  const classes = new Uint16Array(s.width * s.height);
+  for (let r = 0, i = 0; r < runs.length; r += 2) {
+    classes.fill(runs[r], i, i + runs[r + 1]);
+    i += runs[r + 1];
+  }
+  return { ...result, segmentation: { ...s, classes } as SegmentationMap };
 }

@@ -6,7 +6,7 @@ import type { ModelRuntime } from "../src/adapters/runtime";
 vi.mock("@detect/core", () => ({
   toTensor: () => ({ dims: [1], data: new Float32Array(1) }),
   decodeAll: () => ({}),
-  mergeResults: () => ({}),
+  mergeResults: (results: unknown[]) => results[0] ?? {},
 }));
 vi.mock("../src/adapters/frameGrabber", () => ({ FrameGrabber: class {
   grab() { return { frame: {}, transform: { frameWidth: 1, frameHeight: 1 } }; }
@@ -228,5 +228,85 @@ describe("model changes during inference", () => {
     frame.resolve({});
     await vi.waitFor(() => expect(cb.onStats).toHaveBeenCalledOnce());
     expect(cb.onError).not.toHaveBeenCalled();
+  });
+});
+
+describe("analyze first", () => {
+  /** A paused video of `duration` s whose seeks finish on the next tick, as a browser's do. */
+  function seekableVideo(duration: number) {
+    const target = new EventTarget();
+    let time = 0;
+    const video = Object.assign(target, {
+      readyState: 2, duration, paused: true, videoWidth: 4, videoHeight: 2, pause: vi.fn(),
+      requestVideoFrameCallback: vi.fn(() => 1), cancelVideoFrameCallback: vi.fn(), currentTime: 0,
+    });
+    Object.defineProperty(video, "currentTime", {
+      get: () => time,
+      set: (t: number) => { time = t; setTimeout(() => target.dispatchEvent(new Event("seeked")), 0); },
+    });
+    return video;
+  }
+  const classes = Uint16Array.from([0, 0, 0, 1, 1, 0, 0, 2]);
+  const ropePipeline = () => ({
+    run: vi.fn((_: unknown, t: number) => ({ metrics: { t }, segmentation: { width: 4, height: 2, classes, rect: { x: 0, y: 0, width: 4, height: 2 }, background: 0 } })),
+    feeds: () => undefined, reset: vi.fn(), markDropped: vi.fn(), summary: () => ({}),
+  });
+
+  async function analyzeSetup(duration: number) {
+    const video = seekableVideo(duration);
+    const cb = { onStats: vi.fn(), onError: vi.fn() };
+    const loop = new FrameLoop(video as unknown as HTMLVideoElement, {} as HTMLCanvasElement, cb);
+    loops.push(loop);
+    const model = runtime();
+    loop.setModel(0, model, config);
+    const pipeline = ropePipeline();
+    loop.setModelPipeline(0, pipeline as never);
+    const draw = vi.fn();
+    (loop as unknown as { renderer: { draw: typeof draw } }).renderer.draw = draw;
+    // setting the model and pipeline refreshes the paused frame once each; analysis is counted from here
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    model.run.mockClear();
+    pipeline.run.mockClear();
+    draw.mockClear();
+    cb.onStats.mockClear();
+    return { loop, video, cb, model, pipeline, draw };
+  }
+
+  it("runs every frame in order once, then plays the stored results without running the model", async () => {
+    const { loop, video, cb, model, pipeline, draw } = await analyzeSetup(0.1);
+    const progress = vi.fn();
+    expect(await loop.analyze(progress, new AbortController().signal)).toBe(true);
+    expect(model.run).toHaveBeenCalledTimes(4); // 0, 1/30, 2/30, 3/30 s
+    expect(pipeline.run.mock.calls.map((c) => c[1])).toEqual([0, 1 / 30, 2 / 30, 3 / 30]);
+    expect(progress).toHaveBeenLastCalledWith(4, 4);
+    expect(loop.analyzed).toBe(true);
+    expect(draw).not.toHaveBeenCalled();
+
+    loop.start();
+    video.currentTime = 0.07; // between the frames at 2/30 and 3/30 s: the nearest one is shown
+    (video.requestVideoFrameCallback.mock.calls.at(-1)![0] as unknown as () => void)();
+    expect(model.run).toHaveBeenCalledTimes(4);
+    expect(draw).toHaveBeenCalledOnce();
+    const shown = draw.mock.calls[0][0];
+    expect(shown.metrics).toEqual({ t: 2 / 30 });
+    expect([...shown.segmentation.classes]).toEqual([...classes]);
+    expect(cb.onStats).toHaveBeenCalledOnce();
+  });
+
+  it("stops when aborted and goes back to live analysis", async () => {
+    const { loop, model } = await analyzeSetup(10);
+    const abort = new AbortController();
+    const result = loop.analyze((done) => { if (done === 2) abort.abort(); }, abort.signal);
+    expect(await result).toBe(false);
+    expect(model.run).toHaveBeenCalledTimes(2);
+    expect(loop.analyzed).toBe(false);
+  });
+
+  it("drops the stored results when a model setting changes", async () => {
+    const { loop } = await analyzeSetup(0.05);
+    await loop.analyze(() => {}, new AbortController().signal);
+    expect(loop.analyzed).toBe(true);
+    loop.setConfig(0, { ...config });
+    expect(loop.analyzed).toBe(false);
   });
 });

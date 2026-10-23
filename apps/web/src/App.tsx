@@ -1,6 +1,6 @@
 import { DecodeError, makeCalibration, modelKey, PIPELINE_METADATA_KEY, PipelineRunner, readOnnxMetadata, type ModelConfig, type PipelineDefinition } from "@detect/core";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FrameLoop, type Stats } from "./adapters/frameLoop";
+import { ANALYZE_FPS, FrameLoop, type Stats } from "./adapters/frameLoop";
 import { errorMessage, webgpuSupported, type BackendPreference, type ModelRuntime } from "./adapters/runtime";
 import { clearGpuVerdicts, createCheckedRuntime, type GpuVerification } from "./adapters/gpuCheck";
 import { checkInputShape, downloadJson, inferConfig, loadConfigFile, loadPipeline, loadPipelineSource } from "./loaders";
@@ -108,7 +108,6 @@ export function App() {
   const [sourceName, setSourceName] = useState("");
   const [aspect, setAspect] = useState(16 / 9);
   const [backendPref, setBackendPref] = useState<BackendPreference>("auto");
-  const [diagonalSearch, setDiagonalSearch] = useState(false);
   /** Every model in the list; its index is its slot in the frame loop. */
   const [models, setModels] = useState<ModelEntry[]>([]);
   const modelsRef = useRef<ModelEntry[]>([]);
@@ -135,6 +134,13 @@ export function App() {
   const [summaries, setSummaries] = useState<ModelSummary[]>([]);
   const [finishing, setFinishing] = useState(false);
   const [cameraFinished, setCameraFinished] = useState(false);
+  /** A chosen video file waiting for the user to pick Analyze first or Live. */
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  /** Progress of the analysis in advance (frames), while it runs. */
+  const [analysis, setAnalysis] = useState<{ done: number; total: number } | null>(null);
+  /** Frames analyzed in advance for the playing video, or 0 for live analysis. */
+  const [analyzedFrames, setAnalyzedFrames] = useState(0);
+  const analysisAbort = useRef<AbortController | null>(null);
 
   function resetReadings() {
     trend.current.clear();
@@ -420,6 +426,11 @@ export function App() {
   }
 
   function stopSource() {
+    analysisAbort.current?.abort();
+    analysisAbort.current = null;
+    setAnalysis(null);
+    setAnalyzedFrames(0);
+    loopRef.current?.clearReplay();
     setCameraFinished(false);
     resetReadings();
     loopRef.current?.resetPipeline();
@@ -476,10 +487,59 @@ export function App() {
     }
   }
 
+  /** A chosen file waits for the user to pick how to analyze it. */
   const startVideoFile = (file: File) => {
     startSelectedTarget();
-    return startVideo(URL.createObjectURL(file), file.name);
+    stopSource();
+    setSource(null);
+    setError("");
+    setPendingFile(file);
   };
+
+  function playLive(file: File) {
+    setPendingFile(null);
+    void startVideo(URL.createObjectURL(file), file.name);
+  }
+
+  /** Analyzes every frame of the file first, then plays it with the stored results (FrameLoop.analyze). */
+  async function analyzeFirst(file: File) {
+    setPendingFile(null);
+    stopSource();
+    setError("");
+    const v = videoRef.current!;
+    v.src = URL.createObjectURL(file);
+    setSource("file");
+    setSourceName(file.name);
+    const abort = new AbortController();
+    analysisAbort.current = abort;
+    setAnalysis({ done: 0, total: 0 });
+    try {
+      await loadedMetadata(v);
+      if (!Number.isFinite(v.duration)) throw new Error("the video's length is unknown, so it can't be analyzed first; choose Live");
+      const ok = await loopRef.current!.analyze((done, total) => {
+        if (analysisAbort.current === abort) setAnalysis({ done, total });
+      }, abort.signal);
+      if (analysisAbort.current !== abort) return; // another source replaced this one
+      if (!ok) {
+        if (!abort.signal.aborted) setError("A model or setting changed during the analysis. Choose the video again.");
+        stopSource();
+        setSource(null);
+        setPendingFile(file);
+        return;
+      }
+      analysisAbort.current = null;
+      setAnalysis(null);
+      setAnalyzedFrames(Math.floor(v.duration * ANALYZE_FPS) + 1);
+      setSummaries(readSummaries());
+      v.currentTime = 0;
+      loopRef.current!.start();
+      await v.play();
+    } catch (e) {
+      if (analysisAbort.current !== abort) return;
+      setAnalysis(null);
+      setError(playError(file.name, e));
+    }
+  }
 
   async function startVideo(src: string, name: string) {
     stopSource();
@@ -492,14 +552,7 @@ export function App() {
       await v.play();
       loopRef.current!.start();
     } catch (e) {
-      // The browser can't decode this codec (e.g. MPEG-4 Part 2, H.265, or an .avi container).
-      const unsupported = e instanceof DOMException && e.name === "NotSupportedError";
-      setError(
-        unsupported
-          ? `Could not play ${name}: the browser doesn't support this video's format. Convert it to H.264 MP4, ` +
-              `e.g. ffmpeg -i "${name}" -c:v libx264 -crf 16 -pix_fmt yuv420p out.mp4`
-          : `Could not play video: ${errorMessage(e)}`,
-      );
+      setError(playError(name, e));
     }
   }
 
@@ -578,12 +631,13 @@ export function App() {
               playsInline
               // Pipelines measure a single pass; looping would restart their measurements.
               loop={!anyPipeline}
-              controls={source === "file"}
+              controls={source === "file" && !analysis}
               onLoadedMetadata={readFrameSize}
               onResize={readFrameSize}
               onEnded={() => { if (source === "file") setSummaries(readSummaries()); }}
-              onPlay={() => setSummaries([])}
-              onSeeking={() => setSummaries([])}
+              // Results analyzed in advance cover the whole video, so its summary stays.
+              onPlay={() => { if (!analyzedFrames) setSummaries([]); }}
+              onSeeking={() => { if (!analyzedFrames) setSummaries([]); }}
             />
             <canvas ref={overlayRef} />
             <CalibrationLine
@@ -593,7 +647,26 @@ export function App() {
               drawing={drawingLine}
               onLine={(l) => { setCalLine(l); setDrawingLine(false); }}
             />
-            {!source && <div className="placeholder">{hasSelection ? "Choose Camera or Video file to see the analysis." : "Start by choosing a subject above."}</div>}
+            {!source && !pendingFile && <div className="placeholder">{hasSelection ? "Choose Camera or Video file to see the analysis." : "Start by choosing a subject above."}</div>}
+            {!source && pendingFile && (
+              <div className="mode-choice">
+                <p>How should <b>{pendingFile.name}</b> be analyzed?</p>
+                <div className="row">
+                  <button onClick={() => void analyzeFirst(pendingFile)} disabled={loading || !active.length}>Analyze first</button>
+                  <button onClick={() => playLive(pendingFile)}>Live</button>
+                </div>
+                <p className="hint"><b>Analyze first:</b> every frame is analyzed before the video plays, so playback is smooth on any device; a slow device takes longer to prepare.</p>
+                <p className="hint"><b>Live:</b> plays right away and analyzes as it goes; a slow device skips frames and the drawing can lag.</p>
+                {(loading || !active.length) && <p className="hint">Analyze first is available once the model has loaded.</p>}
+              </div>
+            )}
+            {analysis && (
+              <div className="analysis-progress" role="status">
+                <p>Analyzing {analysis.total ? `${analysis.done} / ${analysis.total} frames (${Math.floor((100 * analysis.done) / analysis.total)}%)` : "..."}</p>
+                <progress value={analysis.done} max={analysis.total || 1} />
+                <button onClick={() => analysisAbort.current?.abort()}>Cancel</button>
+              </div>
+            )}
             <div className="stage-notices">
               {cameraFinished && <div className="session-finished" role="status">Session finished</div>}
               {loading && <div className="loading-status" role="status">Loading {models.filter((m) => m.loading).map((m) => m.name).join(", ")}...</div>}
@@ -606,7 +679,9 @@ export function App() {
           {source && <div className="analysis-readings">
             {stats && active.length > 0
               ? <KeyMetrics metrics={stats.metrics} detections={stats.detections} showParticles={active.some((m) => m.config?.decoder === "yolo-detect")} trend={<Sparkline buffer={trend.current} />} />
-              : <p className="hint analysis-wait">{loading ? "Your analysis will appear when the model is ready." : "Waiting for the first analyzed frame..."}</p>}
+              : <p className="hint analysis-wait">{loading ? "Your analysis will appear when the model is ready."
+                : analysis ? "Analyzing the video first; it plays when done." : "Waiting for the first analyzed frame..."}</p>}
+            {analyzedFrames > 0 && <p className="hint">Analyzed in advance: {analyzedFrames} frames at {ANALYZE_FPS} per second.</p>}
             {summaries.length > 0 && <SummaryCard models={summaries} title={source === "camera" ? "Camera session summary" : "Video summary"} />}
             <div className="reading-actions">
               {source === "camera" && !cameraFinished && !loading && stats && modelPipelines.some((def, i) => def && models[i]?.on && models[i]?.runtime) &&
@@ -657,10 +732,6 @@ export function App() {
             </label>
             <button className="small" disabled={loading} onClick={() => void checkGpuAgain()}>Check GPU again</button>
             <p className="hint">Small models are checked against the CPU once per GPU and model. Large models, including particles, are not checked; choose WASM if results look wrong.</p>
-            <label className="check">
-              <input type="checkbox" checked={diagonalSearch} onChange={(e) => { setDiagonalSearch(e.target.checked); loopRef.current?.setDiagonalSearch(e.target.checked); }} />
-              <span><b>Try 45° turns (experimental)</b>: for the lamp, also test the picture turned ±45° over the first 10 frames with a rope and keep the strongest. Three times the work while it searches.</span>
-            </label>
             <p className="hint">Tick the models to run; they all run on the same frames. A model downloads the first time it is ticked.</p>
             {models.map((m, i) => (
               <label className="check" key={m.key}>
@@ -797,4 +868,23 @@ function FileButton(props: {
       />
     </label>
   );
+}
+
+/** Resolves once the video's length and size are known; rejects when the browser can't read the file. */
+function loadedMetadata(video: HTMLVideoElement): Promise<void> {
+  if (video.readyState >= 1) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    video.addEventListener("loadedmetadata", () => resolve(), { once: true });
+    video.addEventListener("error", () => reject(video.error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
+      ? new DOMException("unsupported format", "NotSupportedError") : video.error), { once: true });
+  });
+}
+
+function playError(name: string, e: unknown): string {
+  // The browser can't decode this codec (e.g. MPEG-4 Part 2, H.265, or an .avi container).
+  const unsupported = e instanceof DOMException && e.name === "NotSupportedError";
+  return unsupported
+    ? `Could not play ${name}: the browser doesn't support this video's format. Convert it to H.264 MP4, ` +
+        `e.g. ffmpeg -i "${name}" -c:v libx264 -crf 16 -pix_fmt yuv420p out.mp4`
+    : `Could not play video: ${errorMessage(e)}`;
 }
