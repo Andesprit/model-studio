@@ -27,6 +27,10 @@ import java.util.concurrent.Executors
 
 /** One screen: pick a detector, then the camera or a video; the analysed frames are shown with what was found. */
 class MainActivity : ComponentActivity() {
+    companion object {
+        const val LAMP_TIMES = 30
+    }
+
     private val worker = Executors.newSingleThreadExecutor() // every model call runs here
     private lateinit var overlay: OverlayView
     private lateinit var status: TextView
@@ -34,6 +38,9 @@ class MainActivity : ComponentActivity() {
     @Volatile private var useVortex = true
     @Volatile private var running = false
     private var vortex: VortexDetector? = null
+    @Volatile private var lampBackend = LampBackend.CPU_FP32
+    /** One lamp model run (ms) on the last LAMP_TIMES frames, for the median shown. */
+    private val lampTimes = ArrayDeque<Double>()
     private var particles: ParticleDetector? = null
     private var camera: ProcessCameraProvider? = null
     private var lastFrameAt = 0L
@@ -62,6 +69,15 @@ class MainActivity : ComponentActivity() {
         gpuBox.setOnCheckedChangeListener { _, _ -> worker.execute { particles?.close(); particles = null } }
         which.addView(gpuBox)
 
+        // where the lamp model runs: changing it reloads the model and starts the timing over
+        val backends = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+        for (b in LampBackend.entries) backends.addView(RadioButton(this).apply { text = b.label; id = 100 + b.ordinal })
+        backends.check(100 + lampBackend.ordinal)
+        backends.setOnCheckedChangeListener { _, id ->
+            lampBackend = LampBackend.entries[id - 100]
+            worker.execute { vortex?.close(); vortex = null; lampTimes.clear() }
+        }
+
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         buttons.addView(Button(this).apply { text = "Camera"; setOnClickListener { onCamera() } })
         buttons.addView(Button(this).apply { text = "Video"; setOnClickListener { pickVideo.launch(arrayOf("video/*")) } })
@@ -70,6 +86,7 @@ class MainActivity : ComponentActivity() {
         status = TextView(this).apply { text = "pick a detector and a source"; setPadding(16, 8, 16, 8) }
         overlay = OverlayView(this)
         root.addView(which, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        root.addView(backends, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(status, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(overlay, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
@@ -152,7 +169,7 @@ class MainActivity : ComponentActivity() {
         val t0 = System.nanoTime()
         val text: String
         if (useVortex) {
-            val d = vortex ?: VortexDetector(this).also { vortex = it }
+            val d = vortex ?: VortexDetector(this, lampBackend).also { vortex = it; lampTimes.clear() }
             val r = d.detect(frame, t)
             runOnUiThread { overlay.showVortex(frame, r) }
             val m = r.step?.metrics.orEmpty()
@@ -161,7 +178,7 @@ class MainActivity : ComponentActivity() {
                 "thickness ${m["thickness"] ?: "-"}, breathing ${m["breathing"] ?: "-"} at ${m["breathing Hz"] ?: "-"} Hz, " +
                 "waviness ${m["waviness"] ?: "-"}\n" +
                 "center ${m["center"] ?: "-"}, drift ${m["drift speed"] ?: "-"}, area ${m["area"] ?: "-"} (${m["size"] ?: "-"})\n" +
-                "network %.0f ms".format(r.networkMs)
+                lampTiming(d, r)
         } else {
             val d = particles ?: ParticleDetector(this, gpuBox.isChecked).also { particles = it }
             val r = d.detect(frame)
@@ -175,6 +192,15 @@ class MainActivity : ComponentActivity() {
         lastFrameAt = now
         val line = "$text, frame %.0f ms, %.1f fps, %d x %d".format(total, fps, frame.width, frame.height)
         runOnUiThread { status.text = line }
+    }
+
+    /** One model run on this frame and the median over the last LAMP_TIMES frames, on the backend that ran it. */
+    private fun lampTiming(d: VortexDetector, r: VortexDetector.Result): String {
+        val one = r.networkMs / r.branches
+        lampTimes.addLast(one)
+        while (lampTimes.size > LAMP_TIMES) lampTimes.removeFirst()
+        val median = lampTimes.sorted()[lampTimes.size / 2]
+        return "lamp model %.0f ms per run, median %.0f ms over %d frames (${d.backendNote})".format(one, median, lampTimes.size)
     }
 
     private fun rotate(b: Bitmap, deg: Int): Bitmap =

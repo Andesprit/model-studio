@@ -9,15 +9,24 @@ Model studio's file (vortex_lamp_auto_fp16.onnx) wraps the same network in If no
 The app runs the bare network and turns the frame itself (VortexDetector.runBranch): one copy of the weights instead
 of three, and no If nodes, which NNAPI can't run. fp32: ONNX Runtime's CPU kernels have no fp16 convolutions.
 
-Checks on the desktop that the bare network plus the app's turning gives model studio's masks, on the smoke test's
-lamp image, in both branches.
+Also writes vortex_lamp_rope_int8.onnx: the same network quantised for the phone's CPU (onnxruntime quantize_static,
+QDQ, per-channel int8 weights, uint8 activations, MinMax), calibrated on CALIB_FRAMES lamp training frames, half as
+the lamp_fixed crop and half as the full phone frame, each fitted into the canvas as the app does, as is and turned
+(both branches' inputs).
+
+Checks on the desktop that the bare network (fp32 and int8) plus the app's turning gives model studio's masks, on the
+smoke test's lamp image lying and upright, in both branches.
 """
 import os
+import csv
+import tempfile
 from pathlib import Path
 
 import cv2
 import numpy as np
 import onnxruntime as ort
+from onnxruntime.quantization import CalibrationDataReader, CalibrationMethod, QuantFormat, QuantType, quantize_static
+from onnxruntime.quantization.shape_inference import quant_pre_process
 import segmentation_models_pytorch as smp
 import torch
 import torch.nn as nn
@@ -31,6 +40,8 @@ STUDIO_MODEL = PIPE / ("vortex_detector/models/lamp_r2_lite0_bg_strong_scale_til
                        "vortex_lamp_auto_lamp_r2_lite0_bg_strong_scale_tilt_steep_nogate_fp16.onnx")
 IMAGE = PIPE / "vortex_detector/lamp_fixed/frames/IMG_2117_f00006.png"
 OUT = APP / "app/src/main/assets/vortex_lamp_rope.onnx"
+OUT_INT8 = APP / "app/src/main/assets/vortex_lamp_rope_int8.onnx"
+CALIB_FRAMES = 200
 H, W = 416, 232
 
 
@@ -80,6 +91,40 @@ def branch(sess, x, vertical):
     return np.ascontiguousarray(y.T[:, ::-1])                        # transpose back, then flip the columns
 
 
+def calibration() -> list:
+    """Both branches' inputs for CALIB_FRAMES lamp training frames (crops and full phone frames, alternating)."""
+    root = PIPE / "vortex_detector"
+    rows = [r for r in csv.DictReader(open(root / "lamp_split.csv")) if r["split"] == "train"]
+    rows.sort(key=lambda r: (r["video"], int(r["frame"])))
+    rows = [rows[i] for i in np.linspace(0, len(rows) - 1, CALIB_FRAMES).round().astype(int)]
+    out = []
+    for i, r in enumerate(rows):
+        stem = f"{r['video']}_f{int(r['frame']):05d}"
+        x = lamp_input(cv2.imread(str(root / "lamp_fixed/frames" / f"{stem}.png") if i % 2 == 0
+                                  else str(root / "lamp_videos/frames" / f"{stem}.jpg")))
+        out += [x, np.ascontiguousarray(x[0, 0].T[::-1])[None, None]]   # as is; turned as runBranch does
+    return out
+
+
+class Reader(CalibrationDataReader):
+    def __init__(self, arrays):
+        self.arrays = iter(arrays)
+
+    def get_next(self):
+        x = next(self.arrays, None)
+        return None if x is None else {"x": x}
+
+
+def quantise():
+    with tempfile.TemporaryDirectory() as d:
+        prep = Path(d) / "prep.onnx"
+        quant_pre_process(str(OUT), str(prep), skip_symbolic_shape=False)
+        quantize_static(str(prep), str(OUT_INT8), Reader(calibration()), quant_format=QuantFormat.QDQ, per_channel=True,
+                        activation_type=QuantType.QUInt8, weight_type=QuantType.QInt8,
+                        calibrate_method=CalibrationMethod.MinMax)
+    print(f"{OUT_INT8.name}: {OUT_INT8.stat().st_size / 1e6:.1f} MB")
+
+
 def main():
     ck = torch.load(CHECKPOINT, map_location="cpu")
     net = Normalized(smp.Unet("timm-tf_efficientnet_lite0", encoder_weights=None, in_channels=1, classes=1,
@@ -89,18 +134,20 @@ def main():
     torch.onnx.export(model, torch.zeros(1, 1, H, W), str(OUT), input_names=["x"], output_names=["y"], opset_version=17,
                       dynamo=False, dynamic_axes={"x": {2: "h", 3: "w"}, "y": {2: "h", 3: "w"}})
     print(f"{OUT.name}: {OUT.stat().st_size / 1e6:.1f} MB")
+    quantise()
 
-    app = ort.InferenceSession(str(OUT), providers=["CPUExecutionProvider"])
     studio = ort.InferenceSession(str(STUDIO_MODEL), providers=["CPUExecutionProvider"])
     lying = cv2.imread(str(IMAGE))
-    for label, bgr in [("lying", lying), ("upright", cv2.rotate(lying, cv2.ROTATE_90_CLOCKWISE))]:
-        x = lamp_input(bgr)
-        for mode, name, vertical in [(1, "logits", True), (2, "logits_asis", False)]:
-            want = studio.run([name], {"image": x, "mode": np.array([mode], np.float32)})[0][0, 0] > 0
-            got = branch(app, x, vertical) > 0
-            union = (want | got).sum()
-            print(f"{label} lamp, mode {mode}: rope cells {got.sum()} vs {want.sum()}, "
-                  f"IoU {(want & got).sum() / union if union else 1:.4f}")
+    for model in (OUT, OUT_INT8):
+        app = ort.InferenceSession(str(model), providers=["CPUExecutionProvider"])
+        for label, bgr in [("lying", lying), ("upright", cv2.rotate(lying, cv2.ROTATE_90_CLOCKWISE))]:
+            x = lamp_input(bgr)
+            for mode, name, vertical in [(1, "logits", True), (2, "logits_asis", False)]:
+                want = studio.run([name], {"image": x, "mode": np.array([mode], np.float32)})[0][0, 0] > 0
+                got = branch(app, x, vertical) > 0
+                union = (want | got).sum()
+                print(f"{model.stem}, {label} lamp, mode {mode}: rope cells {got.sum()} vs {want.sum()}, "
+                      f"IoU {(want & got).sum() / union if union else 1:.4f}")
 
 
 if __name__ == "__main__":

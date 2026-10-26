@@ -6,8 +6,13 @@ files the web app ships (the particle model here is its INT8 LiteRT export).
 
 | detector | model (in `app/src/main/assets`) | runtime | steps ported from |
 |---|---|---|---|
-| Vortex | `vortex_lamp_rope.onnx`: the rope network of model studio's live lamp model (steep tilt, no water gate), fp32, from `tools/export_lamp_model.py` | ONNX Runtime Android 1.20, 4 threads | model studio's `lamp.pipeline.js` for a model with no gate: landscape pictures turned upright, both branches while deciding and the stronger rope locked after 10 frames, decided again after 15 frames with no rope or a turned phone, "no lamp in view", largest piece, and the rope measurements (`RopeAnalyzer.kt`: thickness, center, drift, waviness, area, area rate, breathing) |
+| Vortex | `vortex_lamp_rope.onnx`: the rope network of model studio's live lamp model (steep tilt, no water gate), fp32, and `vortex_lamp_rope_int8.onnx`, the same quantised (3.8 MB), both from `tools/export_lamp_model.py` | ONNX Runtime Android 1.20: CPU fp32 (4 threads), CPU INT8, or NNAPI (the phone's GPU or AI chip, half precision allowed), picked on screen | model studio's `lamp.pipeline.js` for a model with no gate: landscape pictures turned upright, both branches while deciding and the stronger rope locked after 10 frames, decided again after 15 frames with no rope or a turned phone, "no lamp in view", largest piece, and the rope measurements (`RopeAnalyzer.kt`: thickness, center, drift, waviness, area, area rate, breathing) |
 | Particles | `particle_detector_int8.tflite` (lc_100, INT8, float decode) | LiteRT 1.0.1, CPU 4 threads or GPU delegate | `particle_detector/run_model.py`: CLAHE, letterbox 1280 x 384, conf 0.20, NMS 0.35 |
+
+The lamp model's backend is picked on screen (CPU fp32, CPU INT8, NNAPI); the status line shows one model run and
+its median over the last 30 frames, with the backend that ran it (NNAPI falls back to CPU fp32 if it can't be set up,
+and says so). Each backend has one session per canvas shape (the frame as is and turned), with the shape fixed: NNAPI
+needs fixed shapes.
 
 Model studio's lamp file wraps the network in If nodes that pick the branch (as is, or the frame turned 90 deg). The app
 runs the bare network and turns the frame itself (`VortexDetector.runBranch`), the same arithmetic: one copy of the weights
@@ -53,11 +58,12 @@ against them on a phone or emulator, and checks the rope measurements on a band 
 ```
 
 Results on the x86_64 emulator (2026-10-26):
-- vortex, against model studio's live lamp file: rope IoU 0.9998-1.000 on the desktop's own input in the branch that
-  finds the rope, 0.995-0.997 on the app's own resize (Android's bilinear resize differs from cv2's at the mask
+- vortex, against model studio's live lamp file: rope IoU 0.9998-1.000 (CPU fp32, NNAPI) and 0.989-0.993 (CPU INT8)
+  on the desktop's own input in the branch that finds the rope, 0.995-0.997 (fp32) on the app's own resize (Android's bilinear resize differs from cv2's at the mask
   boundary); the nearly empty other branch differs by a few cells. The lying lamp (a landscape picture, turned upright)
   and the upright one give the same orientation, rope strength and thickness.
 - particles, INT8 tflite vs the fp32 onnx desktop boxes: 38 vs 35 boxes, F1 0.932 at IoU 0.5.
 
-Emulator times (vortex 310-410 ms with both branches while deciding, particles ~600 ms) say nothing about a phone. The test logs the phone's times
+Emulator times say nothing about a phone (one lamp model run: CPU fp32 180-250 ms, CPU INT8 75-105 ms, NNAPI 440-470 ms
+on the emulator's reference NNAPI with no GPU or AI chip; particles ~600 ms). The test logs the phone's times
 under the logcat tag `SmokeTest`, including whether the GPU delegate took the particle model (`backend`).

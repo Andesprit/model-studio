@@ -24,7 +24,10 @@ class SmokeTest {
 
     @Test
     fun vortexMatchesDesktop() {
-        VortexDetector(app).use { d ->
+        // every backend: INT8 and NNAPI's half precision move a few more boundary cells than fp32 on the CPU
+        for ((backend, bars) in listOf(LampBackend.CPU_FP32 to (0.98 to 0.9), LampBackend.CPU_INT8 to (0.95 to 0.9),
+                LampBackend.NNAPI to (0.95 to 0.9))) VortexDetector(app, backend).use { d ->
+            Log.i("SmokeTest", "vortex backend ${backend.label}: runs on ${d.backendNote}")
             for (image in listOf("lamp", "lamp_upright")) {
                 val frame = test.assets.open("$image.png").use { BitmapFactory.decodeStream(it) }
                 // the desktop's own input: the runtimes must agree (model studio's fp16 file, the app's fp32 network);
@@ -33,22 +36,23 @@ class SmokeTest {
                     java.nio.ByteBuffer.wrap(b).order(java.nio.ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
                         .let { f -> FloatArray(f.remaining()).also { f.get(it) } }
                 }
-                for ((input, bar) in listOf("desktop input" to desktop to 0.98, "app input" to d.preprocess(frame).first to 0.9)) {
+                for ((input, bar) in listOf("desktop input" to desktop to bars.first, "app input" to d.preprocess(frame).first to bars.second)) {
                     for (mode in 1..2) {
                         val out = d.run(input.second, mode)
                         val want = test.assets.open("${image}_rope_mode$mode.bin").readBytes()
                         val rope = iou(ByteArray(out.size) { if (out[it] > 0f) 1 else 0 }, want)
-                        Log.i("SmokeTest", "vortex $image, ${input.first}, mode $mode: rope IoU %.4f (${want.count { it.toInt() == 1 }} cells)".format(rope))
+                        Log.i("SmokeTest", "vortex ${backend.name} $image, ${input.first}, mode $mode: rope IoU %.4f (${want.count { it.toInt() == 1 }} cells)".format(rope))
                         // an almost empty reference (the wrong branch): only a bar on the count, a few cells either way
                         if (want.count { it.toInt() == 1 } < 300) assertTrue("$image mode $mode", out.count { it > 0f } < 600)
-                        else assertTrue("rope IoU $rope, $image, ${input.first}, mode $mode", rope > bar)
+                        else assertTrue("rope IoU $rope, ${backend.name}, $image, ${input.first}, mode $mode", rope > bar)
                     }
                 }
                 d.reset()
-                val ms = (0 until 12).map { d.detect(frame, it / 30.0).networkMs }
-                val r = d.detect(frame, 0.5)
-                Log.i("SmokeTest", "vortex $image: ${r.orientation}, strength %.3f, thickness ${r.step?.metrics?.get("thickness")}, network median %.1f ms (both branches while deciding, one after)"
-                    .format(r.strength, ms.sorted()[6]))
+                // one model run: the frames after the orientation locks run one branch
+                val ms = (0 until 16).map { d.detect(frame, it / 30.0) }.filter { it.branches == 1 }.map { it.networkMs }
+                val r = d.detect(frame, 0.6)
+                Log.i("SmokeTest", "vortex ${backend.name} $image: ${r.orientation}, strength %.3f, thickness ${r.step?.metrics?.get("thickness")}, one model run median %.1f ms"
+                    .format(r.strength, ms.sorted()[ms.size / 2]))
                 // both end up vertical: the lying lamp's picture is landscape, so the app turns it upright first
                 assertTrue("$image orientation ${r.orientation}, turn ${r.turn}", r.orientation == "vertical" && r.turn == (if (image == "lamp") 90 else 0))
             }
