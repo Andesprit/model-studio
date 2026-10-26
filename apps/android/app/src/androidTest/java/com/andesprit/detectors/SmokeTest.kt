@@ -24,29 +24,48 @@ class SmokeTest {
 
     @Test
     fun vortexMatchesDesktop() {
-        val frame = test.assets.open("lamp.png").use { BitmapFactory.decodeStream(it) }
         VortexDetector(app).use { d ->
-            // the desktop's own input: the runtimes must agree; the app's resize (Android bilinear, not cv2's)
-            // moves a few boundary cells of a small mask, hence the lower bar
-            val desktop = test.assets.open("lamp_input.bin").readBytes().let { b ->
-                java.nio.ByteBuffer.wrap(b).order(java.nio.ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
-                    .let { f -> FloatArray(f.remaining()).also { f.get(it) } }
-            }
-            for ((input, bar) in listOf("desktop input" to desktop to 0.99, "app input" to d.preprocess(frame).first to 0.95)) {
-                for (mode in 1..2) {
-                    val out = d.run(input.second, mode)
-                    val want = test.assets.open("lamp_rope_mode$mode.bin").readBytes()
-                    val water = test.assets.open("lamp_water_mode$mode.bin").readBytes()
-                    val rope = iou(ByteArray(out.size) { if (out[it] > 0f) 1 else 0 }, want)
-                    val w = iou(ByteArray(out.size) { if (out[it] != VortexDetector.OUTSIDE) 1 else 0 }, water)
-                    Log.i("SmokeTest", "vortex ${input.first}, mode $mode: rope IoU %.4f, water IoU %.4f".format(rope, w))
-                    assertTrue("rope IoU $rope, ${input.first}, mode $mode", rope > bar)
-                    assertTrue("water IoU $w, ${input.first}, mode $mode", w > bar)
+            for (image in listOf("lamp", "lamp_upright")) {
+                val frame = test.assets.open("$image.png").use { BitmapFactory.decodeStream(it) }
+                // the desktop's own input: the runtimes must agree (model studio's fp16 file, the app's fp32 network);
+                // the app's resize (Android bilinear, not cv2's) moves a few boundary cells, hence the lower bar
+                val desktop = test.assets.open("${image}_input.bin").readBytes().let { b ->
+                    java.nio.ByteBuffer.wrap(b).order(java.nio.ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+                        .let { f -> FloatArray(f.remaining()).also { f.get(it) } }
                 }
+                for ((input, bar) in listOf("desktop input" to desktop to 0.98, "app input" to d.preprocess(frame).first to 0.9)) {
+                    for (mode in 1..2) {
+                        val out = d.run(input.second, mode)
+                        val want = test.assets.open("${image}_rope_mode$mode.bin").readBytes()
+                        val rope = iou(ByteArray(out.size) { if (out[it] > 0f) 1 else 0 }, want)
+                        Log.i("SmokeTest", "vortex $image, ${input.first}, mode $mode: rope IoU %.4f (${want.count { it.toInt() == 1 }} cells)".format(rope))
+                        // an almost empty reference (the wrong branch): only a bar on the count, a few cells either way
+                        if (want.count { it.toInt() == 1 } < 300) assertTrue("$image mode $mode", out.count { it > 0f } < 600)
+                        else assertTrue("rope IoU $rope, $image, ${input.first}, mode $mode", rope > bar)
+                    }
+                }
+                d.reset()
+                val ms = (0 until 12).map { d.detect(frame, it / 30.0).networkMs }
+                val r = d.detect(frame, 0.5)
+                Log.i("SmokeTest", "vortex $image: ${r.orientation}, strength %.3f, thickness ${r.step?.metrics?.get("thickness")}, network median %.1f ms (both branches while deciding, one after)"
+                    .format(r.strength, ms.sorted()[6]))
+                // both end up vertical: the lying lamp's picture is landscape, so the app turns it upright first
+                assertTrue("$image orientation ${r.orientation}, turn ${r.turn}", r.orientation == "vertical" && r.turn == (if (image == "lamp") 90 else 0))
             }
-            val ms = (0 until 10).map { d.detect(frame).networkMs }.sorted()
-            Log.i("SmokeTest", "vortex network median %.1f ms".format(ms[5]))
         }
+    }
+
+    @Test
+    fun ropeMeasurements() {
+        // a straight band 20 cells thick at rows 100-119, at scale 1 (a cell is a pixel)
+        val h = VortexDetector.H; val w = VortexDetector.W
+        val band = ByteArray(h * w) { if (it / w in 100..119) 1 else 0 }
+        val lying = RopeAnalyzer().step(band, h, w, false, 1f, w, h, 0.0).metrics
+        assertTrue("$lying", lying["thickness"] == "20.00 px" && lying["center"] == "110.00 px" && lying["present"] == "100.0 %")
+        // the same band standing up (columns 100-119), measured as a vertical rope
+        val upright = ByteArray(h * w) { if (it % w in 100..119) 1 else 0 }
+        val standing = RopeAnalyzer().step(upright, h, w, true, 1f, w, h, 0.0).metrics
+        assertTrue("$standing", standing["thickness"] == "20.00 px" && standing["center"] == "110.00 px" && standing["present"] == "100.0 %")
     }
 
     @Test

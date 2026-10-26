@@ -8,7 +8,8 @@ Copies the two models and one test image of each detector into the app, and writ
 on those images, for SmokeTest.kt to compare against:
   particles: boxes from particle_detector.onnx (fp32) through run_model.py's detect; the app runs the INT8 .tflite,
              so the test asks for matching boxes, not identical ones
-  vortex:    rope and water masks of vortex_lamp_auto_fp32.onnx in mode 1 and 2 (the app runs the same file)
+  vortex:    rope masks of model studio's lamp file in mode 1 and 2, on a lying and an upright lamp (the app runs the
+             bare network from tools/export_lamp_model.py and turns the frame itself, so the test checks both branches)
 """
 import json
 import os
@@ -28,10 +29,11 @@ TEST = APP / "app/src/androidTest/assets"
 PARTICLE_MODEL = PIPE / "particle_detector/models/particle_detector_int8.tflite"
 PARTICLE_REF_MODEL = PIPE / "particle_detector/models/particle_detector.onnx"
 PARTICLE_IMAGE = PIPE / "particle_detector/data/learning_curve_level/lc_100/images/val/bomba-2_tube_3_frame_005750.jpg"
-VORTEX_MODEL = PIPE / "vortex_detector/models/model_studio/vortex_lamp_auto_fp32.onnx"
+# model studio's file with the app's checkpoint (tools/export_lamp_model.py)
+VORTEX_MODEL = PIPE / ("vortex_detector/models/lamp_r2_lite0_bg_strong_scale_tilt_steep_nogate/"
+                       "vortex_lamp_auto_lamp_r2_lite0_bg_strong_scale_tilt_steep_nogate_fp16.onnx")
 VORTEX_IMAGE = PIPE / "vortex_detector/lamp_fixed/frames/IMG_2117_f00006.png"
 H, W = 416, 232
-OUTSIDE = -10000.0
 
 sys.path.insert(0, str(PIPE / "particle_detector"))
 import run_model  # noqa: E402
@@ -52,22 +54,23 @@ def main():
     ASSETS.mkdir(parents=True, exist_ok=True)
     TEST.mkdir(parents=True, exist_ok=True)
     shutil.copy(PARTICLE_MODEL, ASSETS / "particle_detector_int8.tflite")
-    shutil.copy(VORTEX_MODEL, ASSETS / "vortex_lamp.onnx")
     cv2.imwrite(str(TEST / "particles.png"), cv2.imread(str(PARTICLE_IMAGE)))  # png: the same pixels on both sides
-    shutil.copy(VORTEX_IMAGE, TEST / "lamp.png")
+    lying = cv2.imread(str(VORTEX_IMAGE))
+    cv2.imwrite(str(TEST / "lamp.png"), lying)
+    cv2.imwrite(str(TEST / "lamp_upright.png"), cv2.rotate(lying, cv2.ROTATE_90_CLOCKWISE))
 
     detect = run_model.load(PARTICLE_REF_MODEL)
     boxes = detect(cv2.imread(str(TEST / "particles.png")))
 
     sess = ort.InferenceSession(str(VORTEX_MODEL), providers=["CPUExecutionProvider"])
-    x = lamp_input(cv2.imread(str(VORTEX_IMAGE)))
-    (TEST / "lamp_input.bin").write_bytes(x.tobytes())  # float32 little-endian, 1 x 1 x 416 x 232
     vortex = {}
-    for mode, name in [(1, "logits"), (2, "logits_asis")]:
-        out = sess.run([name], {"image": x, "mode": np.array([mode], np.float32)})[0][0, 0]
-        (TEST / f"lamp_rope_mode{mode}.bin").write_bytes((out > 0).astype(np.uint8).tobytes())
-        (TEST / f"lamp_water_mode{mode}.bin").write_bytes((out != OUTSIDE).astype(np.uint8).tobytes())
-        vortex[mode] = {"rope": int((out > 0).sum()), "water": int((out != OUTSIDE).sum())}
+    for image in ("lamp", "lamp_upright"):
+        x = lamp_input(cv2.imread(str(TEST / f"{image}.png")))
+        (TEST / f"{image}_input.bin").write_bytes(x.tobytes())  # float32 little-endian, 1 x 1 x 416 x 232
+        for mode, name in [(1, "logits"), (2, "logits_asis")]:
+            out = sess.run([name], {"image": x, "mode": np.array([mode], np.float32)})[0][0, 0]
+            (TEST / f"{image}_rope_mode{mode}.bin").write_bytes((out > 0).astype(np.uint8).tobytes())
+            vortex[f"{image} mode {mode}"] = int((out > 0).sum())
 
     ref = {"particles": boxes.round(2).tolist(), "vortex": vortex}
     (TEST / "reference.json").write_text(json.dumps(ref, indent=1))

@@ -5,54 +5,74 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import java.nio.FloatBuffer
-import kotlin.math.atan2
-import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sin
 
 /**
- * The vortex lamp model (vortex_lamp_auto_fp32.onnx, as model studio runs it) and the orientation part of
- * vortex_detector/model_studio/lamp.pipeline.js: water region, vertical/horizontal decision over DECIDE_FRAMES
- * frames with water, then one rope branch per frame. The rope measurements of lamp.pipeline.js are not ported yet.
+ * The vortex lamp rope network (vortex_lamp_rope.onnx, tools/export_lamp_model.py) and model studio's
+ * lamp.pipeline.js for a model with no water gate:
+ * - a landscape picture is turned 90 deg clockwise first (the model's canvas is portrait), as model studio does;
+ * - the network knows a rope that runs left to right; runBranch runs it on the canvas as is (horizontal) or turned
+ *   90 deg counter-clockwise with the mask turned back (vertical), as model studio's file does inside;
+ * - while deciding, both branches run and each is scored by its rope strength (mean rope probability x share of the
+ *   rope in its largest piece); after DECIDE_FRAMES frames with a rope the stronger orientation is locked and one
+ *   branch runs per frame; it decides again when the picture's shape changes or after REDECIDE_FRAMES frames with no
+ *   rope, and warns "no lamp in view" after LAMP_MISSING_FRAMES;
+ * - only the largest rope piece is kept, and RopeAnalyzer measures it.
+ * Not ported: the tilt warning (this model was trained on lamps tilted up to 45 deg).
  */
 class VortexDetector(context: Context) : AutoCloseable {
     companion object {
         const val H = 416
         const val W = 232
-        const val OUTSIDE = -10000f
         const val DECIDE_FRAMES = 10
-        const val WATER_MIN_FRACTION = 0.01
+        const val ROPE_MIN = 0.005 // rope strength of a lamp in view: lamp frames 0.010-0.10, rooms with no lamp ~0.001
+        const val LAMP_MISSING_FRAMES = 5
+        const val REDECIDE_FRAMES = 15
     }
 
-    /** Masks are H x W cells of the model canvas; frame pixel = cell / scale. */
+    /**
+     * The rope mask is H x W cells of the canvas (picture pixel = cell / scale); the picture is the frame turned by
+     * `turn` degrees clockwise. The drawing is in picture pixels.
+     */
     class Result(
         val rope: ByteArray?,
-        val water: ByteArray?,
-        val waterFound: Boolean,
-        val orientation: String,
         val scale: Float,
+        val turn: Int,
+        val orientation: String,
+        val strength: Double,
+        val lampMissing: Boolean,
+        val step: RopeAnalyzer.Step?,
         val networkMs: Double,
     )
 
     private val env = OrtEnvironment.getEnvironment()
     private val session: OrtSession = env.createSession(
-        context.assets.open("vortex_lamp.onnx").use { it.readBytes() },
+        context.assets.open("vortex_lamp_rope.onnx").use { it.readBytes() },
         OrtSession.SessionOptions().apply { setIntraOpNumThreads(4) },
     )
+    private val analyzer = RopeAnalyzer()
 
     private var sumVertical = 0.0
     private var sumHorizontal = 0.0
     private var seen = 0
     private var locked: String? = null
+    private var missingRope = 0
+    private var shape: String? = null
 
-    /** A new video or camera start: decide the orientation again. */
-    fun reset() {
+    private fun decideAgain() {
         sumVertical = 0.0; sumHorizontal = 0.0; seen = 0; locked = null
     }
 
-    private fun better(): String = locked ?: if (sumVertical >= sumHorizontal) "vertical" else "horizontal"
+    /** A new video or camera start: decide the orientation again and start the measurements over. */
+    fun reset() {
+        decideAgain(); missingRope = 0; shape = null; analyzer.reset()
+    }
+
+    private fun better(): String = if (sumVertical >= sumHorizontal) "vertical" else "horizontal"
 
     /** BT.601 luma, fit into H x W at the top-left, zero padding, /255. Returns the input and the scale. */
     fun preprocess(frame: Bitmap): Pair<FloatArray, Float> {
@@ -70,56 +90,77 @@ class VortexDetector(context: Context) : AutoCloseable {
         return x to s
     }
 
-    /** The raw network output of one branch (mode 1 "logits", mode 2 "logits_asis"), H x W. */
-    fun run(input: FloatArray, mode: Int): FloatArray {
-        val name = if (mode == 1) "logits" else "logits_asis"
-        OnnxTensor.createTensor(env, FloatBuffer.wrap(input), longArrayOf(1, 1, H.toLong(), W.toLong())).use { image ->
-            OnnxTensor.createTensor(env, FloatBuffer.wrap(floatArrayOf(mode.toFloat())), longArrayOf(1)).use { m ->
-                session.run(mapOf("image" to image, "mode" to m), setOf(name)).use { out ->
-                    val t = out.get(0) as OnnxTensor
-                    val b = t.floatBuffer
-                    return FloatArray(b.remaining()).also { b.get(it) }
-                }
-            }
-        }
+    /** The network's rope logits on the H x W canvas, as is or turned (vertical: the rope runs top to bottom). */
+    fun runBranch(input: FloatArray, vertical: Boolean): FloatArray {
+        if (!vertical) return network(input, H, W)
+        // as model studio's file: transpose, flip the rows (90 deg counter-clockwise), run, transpose back, flip the columns
+        val turned = FloatArray(H * W)
+        for (i in 0 until W) for (j in 0 until H) turned[i * H + j] = input[j * W + (W - 1 - i)]
+        val y = network(turned, W, H)
+        val out = FloatArray(H * W)
+        for (a in 0 until H) for (b in 0 until W) out[a * W + b] = y[(W - 1 - b) * H + a]
+        return out
     }
 
-    fun detect(frame: Bitmap): Result {
-        val (input, s) = preprocess(frame)
-        val which = better()
+    /** Model studio's modes, for the smoke test: 1 = vertical ("logits"), 2 = as is ("logits_asis"). */
+    fun run(input: FloatArray, mode: Int): FloatArray = runBranch(input, mode == 1)
+
+    private fun network(x: FloatArray, h: Int, w: Int): FloatArray =
+        OnnxTensor.createTensor(env, FloatBuffer.wrap(x), longArrayOf(1, 1, h.toLong(), w.toLong())).use { t ->
+            session.run(mapOf("x" to t)).use { out ->
+                val b = (out.get(0) as OnnxTensor).floatBuffer
+                FloatArray(b.remaining()).also { b.get(it) }
+            }
+        }
+
+    /** One frame at `t` seconds (of the video, or since the camera started). */
+    fun detect(frame: Bitmap, t: Double): Result {
+        val turn = if (frame.width > frame.height) 90 else 0
+        val picture = if (turn == 0) frame else Bitmap.createBitmap(frame, 0, 0, frame.width, frame.height,
+            Matrix().apply { postRotate(turn.toFloat()) }, true)
+        val pictureShape = "${picture.width}x${picture.height}"
+        if (shape != null && shape != pictureShape) decideAgain() // the phone turned: decide from the new view
+        shape = pictureShape
+
+        val (input, s) = preprocess(picture)
+        val masks = HashMap<String, ByteArray>()
+        val strengths = HashMap<String, Double>()
         val t0 = System.nanoTime()
-        val logits = run(input, if (which == "horizontal") 2 else 1)
+        for (which in locked?.let { listOf(it) } ?: listOf("vertical", "horizontal")) {
+            val logits = runBranch(input, which == "vertical")
+            val mask = ByteArray(H * W) { if (logits[it] > 0f) 1 else 0 }
+            strengths[which] = ropeStrength(logits, mask)
+            keepLargest(mask)
+            masks[which] = mask
+        }
         val ms = (System.nanoTime() - t0) / 1e6
 
-        // cells of the canvas that hold the frame (the rest is padding)
-        val sw = (frame.width * s).roundToInt().coerceIn(1, W)
-        val sh = (frame.height * s).roundToInt().coerceIn(1, H)
-        val water = ByteArray(H * W)
-        val rope = ByteArray(H * W)
-        for (y in 0 until sh) for (c in 0 until sw) {
-            val v = logits[y * W + c]
-            if (v != OUTSIDE) water[y * W + c] = 1
-            if (v > 0f) rope[y * W + c] = 1
-        }
-        val waterPixels = keepLargest(water)
-        keepLargest(rope)
-        val found = waterPixels > 0 && waterPixels >= WATER_MIN_FRACTION * sw * sh
-
-        if (locked == null && found) {
-            val a = axisAngle(water)
-            if (a != null) {
-                val r = Math.toRadians(a)
-                sumVertical += sin(r) * sin(r)
-                sumHorizontal += cos(r) * cos(r)
-            }
+        val strength = strengths.values.max()
+        missingRope = if (strength >= ROPE_MIN) 0 else missingRope + 1
+        if (locked != null && missingRope >= REDECIDE_FRAMES) decideAgain()
+        if (locked == null && strength >= ROPE_MIN) {
+            sumVertical += strengths["vertical"] ?: 0.0
+            sumHorizontal += strengths["horizontal"] ?: 0.0
             if (++seen >= DECIDE_FRAMES) locked = better()
         }
-        val orientation = locked ?: "${better()} (deciding $seen/$DECIDE_FRAMES)"
-        // After a switch of the deciding branch, this frame's mask belongs to the old branch: show it anyway.
-        return Result(rope, water, found, orientation, s, ms)
+        val which = locked ?: better()
+        val rope = masks[which] // null right after deciding again with only the old branch run: the next frame has it
+        val step = rope?.let { analyzer.step(it, H, W, which == "vertical", s, picture.width, picture.height, t) }
+        val orientation = if (locked != null) which else "$which (deciding $seen/$DECIDE_FRAMES)"
+        return Result(rope, s, turn, orientation, strength, missingRope >= LAMP_MISSING_FRAMES, step, ms)
     }
 
     override fun close() = session.close()
+}
+
+/** Mean rope probability over the canvas x share of the rope cells in the largest piece (before keepLargest). */
+fun ropeStrength(logits: FloatArray, mask: ByteArray): Double {
+    var sum = 0.0
+    for (v in logits) sum += 1 / (1 + exp(-v.toDouble().coerceIn(-30.0, 30.0)))
+    val cells = mask.count { it.toInt() != 0 }
+    if (cells == 0) return 0.0
+    val largest = keepLargest(mask.copyOf())
+    return sum / logits.size * largest / cells
 }
 
 /** Keeps only the largest 4-connected piece of a H x W mask, in place; returns its size. */
@@ -145,19 +186,4 @@ fun keepLargest(mask: ByteArray, w: Int = VortexDetector.W, h: Int = VortexDetec
     }
     for (i in mask.indices) if (label[i] != bestId) mask[i] = 0
     return bestSize
-}
-
-/** Main axis of the mask cells against +x, degrees in (-90, 90]; null under 10 cells. Cells are square here. */
-fun axisAngle(mask: ByteArray, w: Int = VortexDetector.W): Double? {
-    var n = 0; var sx = 0.0; var sy = 0.0; var sxx = 0.0; var syy = 0.0; var sxy = 0.0
-    for (i in mask.indices) {
-        if (mask[i].toInt() == 0) continue
-        val x = (i % w).toDouble(); val y = (i / w).toDouble()
-        n++; sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y
-    }
-    if (n < 10) return null
-    val vx = sxx / n - (sx / n) * (sx / n)
-    val vy = syy / n - (sy / n) * (sy / n)
-    val cxy = sxy / n - (sx / n) * (sy / n)
-    return Math.toDegrees(0.5 * atan2(2 * cxy, vx - vy))
 }

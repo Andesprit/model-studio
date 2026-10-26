@@ -6,12 +6,18 @@ files the web app ships (the particle model here is its INT8 LiteRT export).
 
 | detector | model (in `app/src/main/assets`) | runtime | steps ported from |
 |---|---|---|---|
-| Vortex | `vortex_lamp.onnx` = `vortex_detector/models/model_studio/vortex_lamp_auto_fp32.onnx` | ONNX Runtime Android 1.20, 4 threads | `vortex_detector/model_studio/lamp.pipeline.js`: water region, orientation decided over 10 frames with water and then locked, one rope branch per frame, largest piece |
+| Vortex | `vortex_lamp_rope.onnx`: the rope network of model studio's live lamp model (steep tilt, no water gate), fp32, from `tools/export_lamp_model.py` | ONNX Runtime Android 1.20, 4 threads | model studio's `lamp.pipeline.js` for a model with no gate: landscape pictures turned upright, both branches while deciding and the stronger rope locked after 10 frames, decided again after 15 frames with no rope or a turned phone, "no lamp in view", largest piece, and the rope measurements (`RopeAnalyzer.kt`: thickness, center, drift, waviness, area, area rate, breathing) |
 | Particles | `particle_detector_int8.tflite` (lc_100, INT8, float decode) | LiteRT 1.0.1, CPU 4 threads or GPU delegate | `particle_detector/run_model.py`: CLAHE, letterbox 1280 x 384, conf 0.20, NMS 0.35 |
 
-Not ported yet: the rope measurements of lamp.pipeline.js (thickness, center, breathing...), the tilt warning,
-particle tracking, speed and spin. Videos are read frame by frame with `MediaMetadataRetriever.getFrameAtIndex`, as fast as
-the model allows, not in real time.
+Model studio's lamp file wraps the network in If nodes that pick the branch (as is, or the frame turned 90 deg). The app
+runs the bare network and turns the frame itself (`VortexDetector.runBranch`), the same arithmetic: one copy of the weights
+instead of three, and no If nodes, which NNAPI (the phone's AI chip) can't run. Measurements are in pixels of the analysed
+picture; times are seconds of video (frame index over the mean frame rate) or since the camera started.
+
+Not ported yet: calibration to real units, the summary at the end, particle tracking, speed and spin. The tilt warning
+is left out on purpose: this model was trained on lamps tilted up to 45 deg. Videos are read frame by frame with
+`MediaMetadataRetriever.getFrameAtIndex`, as fast as the model allows, not in real time; frames are turned by the file's
+rotation tag when the retriever has not done it.
 
 ## Build and install
 
@@ -37,18 +43,21 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## Smoke test
 
-`tools/make_reference.py` copies the models and one test image per detector into the app and writes the desktop
-outputs; `app/src/androidTest/.../SmokeTest.kt` compares against them on a phone or emulator:
+`tools/export_lamp_model.py` (vortex_detector's venv) writes the lamp network and checks it against model studio's file
+on the desktop. `tools/make_reference.py` (particle_detector's venv) copies the particle model and the test images (a
+lying and an upright lamp) into the app and writes the desktop outputs; `app/src/androidTest/.../SmokeTest.kt` compares
+against them on a phone or emulator, and checks the rope measurements on a band of known thickness:
 
 ```bash
 ./gradlew connectedDebugAndroidTest
 ```
 
-Results on the x86_64 emulator (2026-10-17):
-- vortex, on the desktop's own input tensor: rope and water IoU 1.000 in both modes. On the app's own resize, rope
-  IoU 0.961 (mode 1, a 549-cell mask) and 0.996 (mode 2); water IoU 0.997. Android's bilinear resize differs
-  from cv2's at the mask boundary.
+Results on the x86_64 emulator (2026-10-26):
+- vortex, against model studio's live lamp file: rope IoU 0.9998-1.000 on the desktop's own input in the branch that
+  finds the rope, 0.995-0.997 on the app's own resize (Android's bilinear resize differs from cv2's at the mask
+  boundary); the nearly empty other branch differs by a few cells. The lying lamp (a landscape picture, turned upright)
+  and the upright one give the same orientation, rope strength and thickness.
 - particles, INT8 tflite vs the fp32 onnx desktop boxes: 38 vs 35 boxes, F1 0.932 at IoU 0.5.
 
-Emulator times (vortex ~360 ms, particles ~600 ms) say nothing about a phone. The test logs the phone's times
+Emulator times (vortex 310-410 ms with both branches while deciding, particles ~600 ms) say nothing about a phone. The test logs the phone's times
 under the logcat tag `SmokeTest`, including whether the GPU delegate took the particle model (`backend`).

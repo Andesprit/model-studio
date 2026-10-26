@@ -37,6 +37,7 @@ class MainActivity : ComponentActivity() {
     private var particles: ParticleDetector? = null
     private var camera: ProcessCameraProvider? = null
     private var lastFrameAt = 0L
+    private var cameraStart = -1L
 
     private val askCamera = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) startCamera() else status.text = "camera permission refused"
@@ -83,7 +84,7 @@ class MainActivity : ComponentActivity() {
     private fun startCamera() {
         stop()
         running = true
-        worker.execute { vortex?.reset() }
+        worker.execute { vortex?.reset(); cameraStart = -1L }
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             val provider = future.get().also { camera = it }
@@ -98,15 +99,20 @@ class MainActivity : ComponentActivity() {
             analysis.setAnalyzer(worker) { image ->
                 val bmp = image.toBitmap()
                 val deg = image.imageInfo.rotationDegrees
+                val ns = image.imageInfo.timestamp
                 image.close()
-                if (running) process(if (deg == 0) bmp else rotate(bmp, deg))
+                if (cameraStart < 0) cameraStart = ns
+                if (running) process(if (deg == 0) bmp else rotate(bmp, deg), (ns - cameraStart) / 1e9)
             }
             provider.unbindAll()
             provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, analysis)
         }, mainExecutor)
     }
 
-    /** Every frame of the video in order, as fast as the model allows (not in real time). */
+    /**
+     * Every frame of the video in order, as fast as the model allows (not in real time). Its time is the frame index
+     * over the video's mean frame rate. A frame not yet turned by the file's rotation tag is turned here.
+     */
     private fun startVideo(uri: Uri) {
         stop()
         running = true
@@ -116,10 +122,15 @@ class MainActivity : ComponentActivity() {
             try {
                 r.setDataSource(this, uri)
                 val n = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)?.toInt() ?: 0
+                val seconds = (r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toDouble() ?: 0.0) / 1000
+                val fps = if (seconds > 0) n / seconds else 30.0
+                val rotation = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toInt() ?: 0
+                val codedWidth = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toInt() ?: 0
                 var i = 0
                 while (running && i < n) {
-                    val frame = r.getFrameAtIndex(i) ?: break
-                    process(frame)
+                    var frame = r.getFrameAtIndex(i) ?: break
+                    if ((rotation == 90 || rotation == 270) && frame.width == codedWidth) frame = rotate(frame, rotation)
+                    process(frame, i / fps)
                     i++
                 }
                 runOnUiThread { status.append("\nvideo done: $i of $n frames") }
@@ -136,15 +147,20 @@ class MainActivity : ComponentActivity() {
         camera?.unbindAll()
     }
 
-    /** Runs on the worker thread. */
-    private fun process(frame: Bitmap) {
+    /** Runs on the worker thread; t in seconds. */
+    private fun process(frame: Bitmap, t: Double) {
         val t0 = System.nanoTime()
         val text: String
         if (useVortex) {
             val d = vortex ?: VortexDetector(this).also { vortex = it }
-            val r = d.detect(frame)
+            val r = d.detect(frame, t)
             runOnUiThread { overlay.showVortex(frame, r) }
-            text = "vortex: ${r.orientation}, water ${if (r.waterFound) "found" else "not found"}\n" +
+            val m = r.step?.metrics.orEmpty()
+            text = (if (r.lampMissing) "no lamp in view\n" else "") +
+                "vortex: ${r.orientation}, rope strength %.3f\n".format(r.strength) +
+                "thickness ${m["thickness"] ?: "-"}, breathing ${m["breathing"] ?: "-"} at ${m["breathing Hz"] ?: "-"} Hz, " +
+                "waviness ${m["waviness"] ?: "-"}\n" +
+                "center ${m["center"] ?: "-"}, drift ${m["drift speed"] ?: "-"}, area ${m["area"] ?: "-"} (${m["size"] ?: "-"})\n" +
                 "network %.0f ms".format(r.networkMs)
         } else {
             val d = particles ?: ParticleDetector(this, gpuBox.isChecked).also { particles = it }

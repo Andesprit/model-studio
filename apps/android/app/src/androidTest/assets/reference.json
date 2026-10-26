@@ -247,13 +247,9 @@
   ]
  ],
  "vortex": {
-  "1": {
-   "rope": 549,
-   "water": 12920
-  },
-  "2": {
-   "rope": 3226,
-   "water": 12920
-  }
+  "lamp mode 1": 0,
+  "lamp mode 2": 3419,
+  "lamp_upright mode 1": 10444,
+  "lamp_upright mode 2": 246
  }
 }
