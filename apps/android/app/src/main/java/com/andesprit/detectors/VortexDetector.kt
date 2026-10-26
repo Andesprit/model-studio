@@ -159,8 +159,11 @@ class VortexDetector(context: Context, backend: Backend = Backend.CPU_FP32) : Ro
         for (which in locked?.let { listOf(it) } ?: listOf("vertical", "horizontal")) {
             val logits = runBranch(input, which == "vertical")
             val mask = ByteArray(H * W) { if (logits[it] > 0f) 1 else 0 }
-            strengths[which] = ropeStrength(logits, mask)
-            keepLargest(mask)
+            val cells = mask.count { it.toInt() != 0 }
+            val largest = keepLargest(mask)
+            // exact while deciding (the orientation comes from it, as model studio); once locked only the "no lamp"
+            // check uses it, so every 4th cell is enough
+            strengths[which] = ropeStrength(logits, cells, largest, if (locked == null) 1 else 4)
             masks[which] = mask
         }
         val ms = (System.nanoTime() - t0) / 1e6
@@ -192,14 +195,19 @@ class VortexDetector(context: Context, backend: Backend = Backend.CPU_FP32) : Ro
     override fun close() = sessions.values.forEach { it.close() }
 }
 
-/** Mean rope probability over the canvas x share of the rope cells in the largest piece (before keepLargest). */
-fun ropeStrength(logits: FloatArray, mask: ByteArray): Double {
-    var sum = 0.0
-    for (v in logits) sum += 1 / (1 + exp(-v.toDouble().coerceIn(-30.0, 30.0)))
-    val cells = mask.count { it.toInt() != 0 }
+/**
+ * Mean rope probability over the canvas (over every `stride`-th cell) x share of the rope cells (`cells`) in the
+ * largest piece (`largest`).
+ */
+fun ropeStrength(logits: FloatArray, cells: Int, largest: Int, stride: Int = 1): Double {
     if (cells == 0) return 0.0
-    val largest = keepLargest(mask.copyOf())
-    return sum / logits.size * largest / cells
+    var sum = 0.0
+    var n = 0
+    for (i in logits.indices step stride) {
+        sum += 1 / (1 + exp(-logits[i].toDouble().coerceIn(-30.0, 30.0)))
+        n++
+    }
+    return sum / n * largest / cells
 }
 
 /** Keeps only the largest 4-connected piece of a H x W mask, in place; returns its size. */

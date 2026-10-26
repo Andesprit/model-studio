@@ -29,7 +29,7 @@ class OverlayView(context: Context) : View(context) {
     private val midPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.rgb(255, 212, 0) }
     private val pointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(255, 59, 59) }
 
-    /** The rope on `frame` (live), or on a video of contentW x contentH shown under this view (frame null). */
+    /** The rope on `frame`, or on a picture of contentW x contentH shown under this view (frame null: the camera's live picture or the playing video). */
     fun showRope(frame: Bitmap?, r: RopeResult, contentW: Int = frame?.width ?: 0, contentH: Int = frame?.height ?: 0) {
         val px = IntArray(r.maskW * r.maskH)
         r.mask?.let { m -> for (i in px.indices) if (m[i].toInt() == 1) px[i] = Color.argb(110, 0, 229, 255) }
@@ -42,10 +42,11 @@ class OverlayView(context: Context) : View(context) {
         invalidate()
     }
 
-    fun showParticles(frame: Bitmap, r: ParticleDetector.Result) {
+    /** The boxes on `frame` (live), or on the camera's live picture of contentW x contentH under this view (frame null). */
+    fun showParticles(frame: Bitmap?, r: ParticleDetector.Result, contentW: Int = frame?.width ?: 0, contentH: Int = frame?.height ?: 0) {
         this.frame = frame
-        contentW = frame.width
-        contentH = frame.height
+        this.contentW = contentW
+        this.contentH = contentH
         mask = null
         rope = null
         boxes = r.boxes

@@ -25,6 +25,11 @@ Model studio's lamp file wraps the network in If nodes that pick the branch (as 
 runs the bare network and turns the frame itself (`VortexDetector.runBranch`), the same arithmetic: one copy of the weights
 instead of three, and no If nodes, which NNAPI can't run.
 
+The camera shows its live picture at full speed with the latest results drawn over it; the models get small frames
+(640 x 480, the same 4:3 view), the latest one each time they are free. The status line is redrawn at most four times a
+second (each change of its text lays the screen out again). Once the lamp's orientation is locked, its rope strength
+(only used for "no lamp in view") is estimated from every 4th cell; while deciding it is exact, as model studio's.
+
 A video runs live or, for the vortex detectors, "Analyze first" (asked after picking it):
 - Live: every frame in order, as fast as the model allows, each result shown as it comes.
 - Analyze first at 10, 15 or 30 frames per second of video: a progress bar (Stop cancels), then the video plays (looping,

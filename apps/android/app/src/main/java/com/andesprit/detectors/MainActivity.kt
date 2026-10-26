@@ -29,9 +29,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import java.util.concurrent.Executors
@@ -49,6 +52,10 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val MODEL_TIMES = 30
         val ANALYZE_RATES = listOf(10, 15, 30)
+        /** Camera frames for the models: the models see 416 x 232 at most, so more pixels only cost time. */
+        val ANALYSIS_SIZE = Size(640, 480)
+        /** The status line is redrawn at most this often: each change of its text lays the screen out again. */
+        const val STATUS_EVERY_MS = 250L
     }
 
     private enum class Kind { LAMP, RIG, PARTICLES }
@@ -60,6 +67,7 @@ class MainActivity : ComponentActivity() {
     private val ui = Handler(Looper.getMainLooper())
     private lateinit var overlay: OverlayView
     private lateinit var video: VideoView
+    private lateinit var preview: PreviewView
     private lateinit var progress: ProgressBar
     private lateinit var status: TextView
     private lateinit var gpuBox: CheckBox
@@ -75,6 +83,7 @@ class MainActivity : ComponentActivity() {
     private var lastFrameAt = 0L
     private var cameraStart = -1L
     private var playback: Runnable? = null
+    @Volatile private var statusShownAt = 0L
 
     private val askCamera = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) startCamera() else status.text = "camera permission refused"
@@ -115,8 +124,15 @@ class MainActivity : ComponentActivity() {
 
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { visibility = View.GONE }
         status = TextView(this).apply { text = "pick a detector and a source"; setPadding(16, 8, 16, 8) }
-        // the video (Analyze first playback) under the overlay, both fitted and centred the same way
+        // the camera's live picture, or the video (Analyze first playback), under the overlay; all fitted and centred
+        // the same way
         val stage = FrameLayout(this)
+        preview = PreviewView(this).apply {
+            scaleType = PreviewView.ScaleType.FIT_CENTER
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE // a TextureView: the overlay draws over it
+            visibility = View.GONE
+        }
+        stage.addView(preview, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         video = VideoView(this).apply { visibility = View.GONE }
         stage.addView(video, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT, Gravity.CENTER))
         overlay = OverlayView(this)
@@ -146,31 +162,41 @@ class MainActivity : ComponentActivity() {
         else askCamera.launch(Manifest.permission.CAMERA)
     }
 
+    /**
+     * The camera: its live picture full speed, and small frames (ANALYSIS_SIZE, the same 4:3 view) for the models, the
+     * latest one each time the model is free; the results are drawn over the live picture as they come.
+     */
     private fun startCamera() {
         stop()
         running = true
         worker.execute { lamp?.reset(); rig?.reset(); cameraStart = -1L }
+        preview.visibility = View.VISIBLE
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
             val provider = future.get().also { camera = it }
+            val selector = { size: Size ->
+                ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                    .setResolutionStrategy(ResolutionStrategy(size, ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
+                    .build()
+            }
+            val live = Preview.Builder().setResolutionSelector(selector(Size(1280, 960))).build()
+            live.surfaceProvider = preview.surfaceProvider
             val analysis = ImageAnalysis.Builder()
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .setResolutionSelector(
-                    ResolutionSelector.Builder().setResolutionStrategy(
-                        ResolutionStrategy(Size(1280, 720), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
-                    ).build()
-                ).build()
+                .setResolutionSelector(selector(ANALYSIS_SIZE))
+                .build()
             analysis.setAnalyzer(worker) { image ->
                 val bmp = image.toBitmap()
                 val deg = image.imageInfo.rotationDegrees
                 val ns = image.imageInfo.timestamp
                 image.close()
                 if (cameraStart < 0) cameraStart = ns
-                if (running) process(if (deg == 0) bmp else rotate(bmp, deg), (ns - cameraStart) / 1e9)
+                if (running) process(if (deg == 0) bmp else rotate(bmp, deg), (ns - cameraStart) / 1e9, overPreview = true)
             }
             provider.unbindAll()
-            provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, analysis)
+            provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, live, analysis)
         }, mainExecutor)
     }
 
@@ -220,7 +246,7 @@ class MainActivity : ComponentActivity() {
                     process(v.upright(frame), i / v.fps)
                     i++
                 }
-                runOnUiThread { status.append("\nvideo done: $i of ${v.frames} frames") }
+                setStatus("$lastStatus\nvideo done: $i of ${v.frames} frames", force = true)
             } catch (e: Exception) {
                 runOnUiThread { status.text = "could not read the video: ${e.message}" }
             } finally {
@@ -265,10 +291,9 @@ class MainActivity : ComponentActivity() {
                     modelTime(res)
                     val (packed, rle) = res.packed()
                     stored.add(Stored(t, packed, rle))
-                    runOnUiThread {
-                        progress.progress = i + 1
-                        status.text = "Analysing ${i + 1} / $total frames (${100 * (i + 1) / total} %), ${d.backendNote}"
-                    }
+                    val shown = i + 1
+                    runOnUiThread { progress.progress = shown }
+                    setStatus("Analysing $shown / $total frames (${100 * shown / total} %), ${d.backendNote}")
                 }
                 val done = stored.size
                 if (!running || done == 0) {
@@ -315,6 +340,7 @@ class MainActivity : ComponentActivity() {
     private fun stop() {
         running = false
         camera?.unbindAll()
+        preview.visibility = View.GONE
         playback?.let { ui.removeCallbacks(it) }
         playback = null
         if (video.visibility == View.VISIBLE) {
@@ -330,20 +356,23 @@ class MainActivity : ComponentActivity() {
         else -> lamp ?: VortexDetector(this, backend).also { lamp = it; modelTimes.clear() }
     }
 
-    /** Runs on the worker thread; t in seconds. */
-    private fun process(frame: Bitmap, t: Double) {
+    /**
+     * Runs on the worker thread; t in seconds. overPreview: the camera's live picture is under the overlay, so only the
+     * results are drawn (fitted to the frame's size, the same view); else the analysed frame is drawn under them.
+     */
+    private fun process(frame: Bitmap, t: Double, overPreview: Boolean = false) {
         val t0 = System.nanoTime()
         val text: String
         if (kind != Kind.PARTICLES) {
             val d = ropeDetector()
             val r = d.detectRope(frame, t)
             modelTime(r)
-            runOnUiThread { overlay.showRope(frame, r) }
+            runOnUiThread { overlay.showRope(if (overPreview) null else frame, r, frame.width, frame.height) }
             text = "${r.header}\n${readings(r)}\n${modelLine(d)}"
         } else {
             val d = particles ?: ParticleDetector(this, gpuBox.isChecked).also { particles = it }
             val r = d.detect(frame)
-            runOnUiThread { overlay.showParticles(frame, r) }
+            runOnUiThread { overlay.showParticles(if (overPreview) null else frame, r, frame.width, frame.height) }
             text = "particles: ${r.boxes.size} (${d.backend}${if (r.shrunk) ", frame shrunk to fit" else ""})\n" +
                 "network %.0f ms".format(r.networkMs)
         }
@@ -351,8 +380,18 @@ class MainActivity : ComponentActivity() {
         val total = (now - t0) / 1e6
         val fps = if (lastFrameAt > 0) 1e9 / (now - lastFrameAt) else 0.0
         lastFrameAt = now
-        val line = "$text, frame %.0f ms, %.1f fps, %d x %d".format(total, fps, frame.width, frame.height)
-        runOnUiThread { status.text = line }
+        setStatus("$text, frame %.0f ms, %.1f fps, %d x %d".format(total, fps, frame.width, frame.height))
+    }
+
+    @Volatile private var lastStatus = ""
+
+    /** Sets the status line, at most every STATUS_EVERY_MS unless forced (the last word of a run). Any thread. */
+    private fun setStatus(text: String, force: Boolean = false) {
+        lastStatus = text
+        val now = System.currentTimeMillis()
+        if (!force && now - statusShownAt < STATUS_EVERY_MS) return
+        statusShownAt = now
+        runOnUiThread { status.text = text }
     }
 
     /** The rope's readings, named as model studio names them for the lamp or the rig. */
