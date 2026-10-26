@@ -49,6 +49,7 @@ class RopeAnalyzer {
             "thickness" to fmt("%.2f px", s.thickness),
             "center" to fmt("%.2f px", s.center),
             "drift speed" to (drift?.let { fmt("%.2f px/s", it) } ?: "-"),
+            "moving" to (drift?.let { trend(it * dt, 0.5, "rising", "falling") } ?: "-"),
             "waviness" to fmt("%.2f px", s.waviness),
             "breathing" to (b?.let { fmt("%.2f px", it.amplitude) } ?: "-"),
             "breathing Hz" to (b?.frequency?.let { fmt("%.2f", it) } ?: "-"),
@@ -121,10 +122,30 @@ class RopeAnalyzer {
         return Breathing((quantile(v, 0.9) - quantile(v, 0.1)) / 2, if (span > 0 && crossings > 0) crossings / 2.0 / span else null)
     }
 
-    private fun trend(change: Double, deadBand: Double) = when {
+    private fun trend(change: Double, deadBand: Double, up: String = "growing", down: String = "shrinking") = when {
         abs(change) <= deadBand -> "steady"
-        change > 0 -> "growing"
-        else -> "shrinking"
+        change > 0 -> up
+        else -> down
+    }
+
+    /** Over every frame since reset(), as the pipeline's summary: frames, thickness, breathing, center, waviness, area. */
+    fun summary(): List<String> {
+        val valid = series.filter { it.present > 0 }
+        if (valid.isEmpty()) return listOf("frames analyzed ${series.size}, none with a rope")
+        val span = valid.last().t - valid.first().t
+        fun stats(xs: List<Double>, unit: String) =
+            fmt("mean %.2f $unit, %.2f-%.2f (p10-p90 %.2f-%.2f)", xs.average(), xs.min(), xs.max(), quantile(xs, 0.1), quantile(xs, 0.9))
+        val b = breathing(valid)
+        return listOf(
+            "frames analyzed ${series.size}, with a rope ${valid.size}" +
+                (if (span > 0) fmt(", %.1f per second of video", (valid.size - 1) / span) else ""),
+            "thickness " + stats(valid.map { it.thickness }, "px"),
+            "breathing " + (b?.let { fmt("%.2f px (%.1f %%)", it.amplitude, 100 * it.amplitude / valid.map { s -> s.thickness }.average()) +
+                (it.frequency?.let { f -> fmt(" at %.2f Hz", f) } ?: "") } ?: "-"),
+            "center " + stats(valid.map { it.center }, "px"),
+            "waviness " + stats(valid.map { it.waviness }, "px"),
+            "area " + fmt("mean %.0f px²", valid.map { it.area }.average()),
+        )
     }
 }
 

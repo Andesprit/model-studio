@@ -34,10 +34,12 @@ import torch.nn.functional as F
 
 APP = Path(__file__).resolve().parents[1]
 PIPE = Path(os.environ.get("PIPE", "D:/pipe"))
-CHECKPOINT = PIPE / "vortex_detector/runs/lamp_r2_lite0_bg_strong_scale_tilt_steep_motion_defocus/lite0_lamp_s0.pt"
-# model studio's file with this checkpoint (the live site's vortex_lamp_auto_fp16.onnx)
-STUDIO_MODEL = PIPE / ("vortex_detector/models/lamp_r2_lite0_bg_strong_scale_tilt_steep_nogate/"
-                       "vortex_lamp_auto_lamp_r2_lite0_bg_strong_scale_tilt_steep_nogate_fp16.onnx")
+# the 0.4 model: the phone-footage augmentations on every training frame at a 0.4 chance (16_train_with_lamp.py
+# --aug-all --aug-p 0.4), the lamp file on model studio's feat/lamp-orientation branch
+CHECKPOINT = PIPE / "vortex_detector/runs/lamp_r2_lite0_bg_strong_scale_tilt_steep_motion_defocus_all_p40/lite0_lamp_s0.pt"
+# model studio's file with this checkpoint (vortex_lamp_auto_fp16.onnx on that branch)
+STUDIO_MODEL = PIPE / ("vortex_detector/models/lamp_r2_lite0_bg_strong_scale_tilt_steep_all_p40_nogate/"
+                       "vortex_lamp_auto_lamp_r2_lite0_bg_strong_scale_tilt_steep_all_p40_nogate_fp16_batch.onnx")
 IMAGE = PIPE / "vortex_detector/lamp_fixed/frames/IMG_2117_f00006.png"
 OUT = APP / "app/src/main/assets/vortex_lamp_rope.onnx"
 OUT_INT8 = APP / "app/src/main/assets/vortex_lamp_rope_int8.onnx"

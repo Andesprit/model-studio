@@ -25,26 +25,24 @@ class SmokeTest {
     @Test
     fun vortexMatchesDesktop() {
         // every backend: INT8 and NNAPI's half precision move a few more boundary cells than fp32 on the CPU
-        for ((backend, bars) in listOf(LampBackend.CPU_FP32 to (0.98 to 0.9), LampBackend.CPU_INT8 to (0.95 to 0.9),
-                LampBackend.NNAPI to (0.95 to 0.9))) VortexDetector(app, backend).use { d ->
+        for ((backend, bars) in listOf(Backend.CPU_FP32 to (0.98 to 0.9), Backend.CPU_INT8 to (0.95 to 0.9),
+                Backend.NNAPI to (0.95 to 0.9))) VortexDetector(app, backend).use { d ->
             Log.i("SmokeTest", "vortex backend ${backend.label}: runs on ${d.backendNote}")
             for (image in listOf("lamp", "lamp_upright")) {
                 val frame = test.assets.open("$image.png").use { BitmapFactory.decodeStream(it) }
-                // the desktop's own input: the runtimes must agree (model studio's fp16 file, the app's fp32 network);
+                // the desktop's own input: the runtimes must agree (model studio's fp16 file, the app's network);
                 // the app's resize (Android bilinear, not cv2's) moves a few boundary cells, hence the lower bar
-                val desktop = test.assets.open("${image}_input.bin").readBytes().let { b ->
-                    java.nio.ByteBuffer.wrap(b).order(java.nio.ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
-                        .let { f -> FloatArray(f.remaining()).also { f.get(it) } }
-                }
+                val desktop = floats(test.assets.open("${image}_input.bin").readBytes())
+                val wants = (1..2).associateWith { test.assets.open("${image}_rope_mode$it.bin").readBytes() }
+                // the branch the app uses on this picture holds the rope: held to the bar; the other one only logged
+                val main = wants.maxBy { (_, m) -> m.count { it.toInt() == 1 } }.key
                 for ((input, bar) in listOf("desktop input" to desktop to bars.first, "app input" to d.preprocess(frame).first to bars.second)) {
                     for (mode in 1..2) {
                         val out = d.run(input.second, mode)
-                        val want = test.assets.open("${image}_rope_mode$mode.bin").readBytes()
+                        val want = wants.getValue(mode)
                         val rope = iou(ByteArray(out.size) { if (out[it] > 0f) 1 else 0 }, want)
-                        Log.i("SmokeTest", "vortex ${backend.name} $image, ${input.first}, mode $mode: rope IoU %.4f (${want.count { it.toInt() == 1 }} cells)".format(rope))
-                        // an almost empty reference (the wrong branch): only a bar on the count, a few cells either way
-                        if (want.count { it.toInt() == 1 } < 300) assertTrue("$image mode $mode", out.count { it > 0f } < 600)
-                        else assertTrue("rope IoU $rope, ${backend.name}, $image, ${input.first}, mode $mode", rope > bar)
+                        Log.i("SmokeTest", "vortex ${backend.name} $image, ${input.first}, mode $mode${if (mode == main) " (used)" else ""}: rope IoU %.4f (${want.count { it.toInt() == 1 }} cells)".format(rope))
+                        if (mode == main) assertTrue("rope IoU $rope, ${backend.name}, $image, ${input.first}, mode $mode", rope > bar)
                     }
                 }
                 d.reset()
@@ -58,6 +56,30 @@ class SmokeTest {
             }
         }
     }
+
+    @Test
+    fun rigMatchesDesktop() {
+        val frame = test.assets.open("rig.png").use { BitmapFactory.decodeStream(it) }
+        val desktop = floats(test.assets.open("rig_input.bin").readBytes())
+        val want = test.assets.open("rig_mask.bin").readBytes()
+        for ((backend, bars) in listOf(Backend.CPU_FP32 to (0.99 to 0.85), Backend.CPU_INT8 to (0.97 to 0.85),
+                Backend.NNAPI to (0.97 to 0.85))) RigDetector(app, backend).use { d ->
+            for ((input, bar) in listOf("desktop input" to desktop to bars.first, "app input" to d.preprocess(frame) to bars.second)) {
+                val out = d.run(input.second)
+                val rope = iou(ByteArray(out.size) { if (out[it] > 0f) 1 else 0 }, want)
+                Log.i("SmokeTest", "rig ${backend.name} (${d.backendNote}), ${input.first}: rope IoU %.4f (${want.count { it.toInt() == 1 }} cells)".format(rope))
+                assertTrue("rig IoU $rope, ${backend.name}, ${input.first}", rope > bar)
+            }
+            val runs = (0 until 10).map { d.detectRope(frame, it / 30.0) }
+            Log.i("SmokeTest", "rig ${backend.name}: thickness ${runs.last().step?.metrics?.get("thickness")}, model median %.1f ms"
+                .format(runs.map { it.networkMs }.sorted()[5]))
+            assertTrue("rig present", runs.last().step?.metrics?.get("present") != "0.0 %")
+        }
+    }
+
+    private fun floats(b: ByteArray): FloatArray =
+        java.nio.ByteBuffer.wrap(b).order(java.nio.ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+            .let { f -> FloatArray(f.remaining()).also { f.get(it) } }
 
     @Test
     fun ropeMeasurements() {

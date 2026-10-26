@@ -26,11 +26,11 @@ import kotlin.math.roundToInt
  * - only the largest rope piece is kept, and RopeAnalyzer measures it.
  * Not ported: the tilt warning (this model was trained on lamps tilted up to 45 deg).
  *
- * `backend` picks the model file and where it runs (LampBackend). There is one session per canvas shape (the frame as
+ * `backend` picks the model file and where it runs: CPU INT8 runs vortex_lamp_rope_int8.onnx, the others the fp32 file. There is one session per canvas shape (the frame as
  * is, 416 x 232, and turned, 232 x 416), each with its shape fixed: NNAPI handles fixed shapes, not free ones. If
  * NNAPI can't be set up the CPU (fp32) runs instead, and `backendNote` says so.
  */
-class VortexDetector(context: Context, backend: LampBackend = LampBackend.CPU_FP32) : AutoCloseable {
+class VortexDetector(context: Context, backend: Backend = Backend.CPU_FP32) : RopeDetector {
     companion object {
         const val H = 416
         const val W = 232
@@ -58,30 +58,30 @@ class VortexDetector(context: Context, backend: LampBackend = LampBackend.CPU_FP
     )
 
     private val env = OrtEnvironment.getEnvironment()
-    /** What runs the model: the chosen backend, or the CPU fallback with the reason. */
-    var backendNote: String = backend.label
+    override var backendNote: String = backend.label
         private set
     private val sessions: Map<Int, OrtSession> // by canvas height: H (as is) or W (turned)
 
     init {
-        val open = { b: LampBackend ->
-            val bytes = context.assets.open(b.asset).use { it.readBytes() }
+        val open = { b: Backend ->
+            val asset = if (b == Backend.CPU_INT8) "vortex_lamp_rope_int8.onnx" else "vortex_lamp_rope.onnx"
+            val bytes = context.assets.open(asset).use { it.readBytes() }
             listOf(H to W, W to H).associate { (h, w) ->
                 h to env.createSession(bytes, OrtSession.SessionOptions().apply {
                     setIntraOpNumThreads(4)
                     setSymbolicDimensionValue("h", h.toLong())
                     setSymbolicDimensionValue("w", w.toLong())
                     // fp16 lets the GPU or AI chip compute in half precision, as model studio's GPU file does
-                    if (b == LampBackend.NNAPI) addNnapi(EnumSet.of(NNAPIFlags.USE_FP16))
+                    if (b == Backend.NNAPI) addNnapi(EnumSet.of(NNAPIFlags.USE_FP16))
                 })
             }
         }
         sessions = try {
             open(backend)
         } catch (e: Exception) {
-            if (backend != LampBackend.NNAPI) throw e
-            backendNote = "${LampBackend.CPU_FP32.label} (NNAPI failed: ${e.message?.take(80)})"
-            open(LampBackend.CPU_FP32)
+            if (backend != Backend.NNAPI) throw e
+            backendNote = "${Backend.CPU_FP32.label} (NNAPI failed: ${e.message?.take(80)})"
+            open(Backend.CPU_FP32)
         }
     }
     private val analyzer = RopeAnalyzer()
@@ -98,7 +98,7 @@ class VortexDetector(context: Context, backend: LampBackend = LampBackend.CPU_FP
     }
 
     /** A new video or camera start: decide the orientation again and start the measurements over. */
-    fun reset() {
+    override fun reset() {
         decideAgain(); missingRope = 0; shape = null; analyzer.reset()
     }
 
@@ -180,14 +180,16 @@ class VortexDetector(context: Context, backend: LampBackend = LampBackend.CPU_FP
         return Result(rope, s, turn, orientation, strength, missingRope >= LAMP_MISSING_FRAMES, step, ms, masks.size)
     }
 
-    override fun close() = sessions.values.forEach { it.close() }
-}
+    override fun detectRope(frame: Bitmap, t: Double): RopeResult {
+        val r = detect(frame, t)
+        val header = (if (r.lampMissing) "no lamp in view\n" else "") +
+            "lamp: ${r.orientation}, rope strength %.3f".format(r.strength)
+        return RopeResult(r.rope, W, H, r.scale, r.turn, r.step, header, r.networkMs, r.branches)
+    }
 
-/** Where the lamp model runs, and which file: tools/export_lamp_model.py writes both. */
-enum class LampBackend(val label: String, val asset: String) {
-    CPU_FP32("CPU fp32", "vortex_lamp_rope.onnx"),
-    CPU_INT8("CPU INT8", "vortex_lamp_rope_int8.onnx"),
-    NNAPI("NNAPI (GPU / AI chip)", "vortex_lamp_rope.onnx"),
+    override fun summary() = analyzer.summary()
+
+    override fun close() = sessions.values.forEach { it.close() }
 }
 
 /** Mean rope probability over the canvas x share of the rope cells in the largest piece (before keepLargest). */

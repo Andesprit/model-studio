@@ -247,9 +247,10 @@
   ]
  ],
  "vortex": {
-  "lamp mode 1": 0,
-  "lamp mode 2": 3419,
-  "lamp_upright mode 1": 10444,
-  "lamp_upright mode 2": 246
+  "lamp mode 1": 8,
+  "lamp mode 2": 3541,
+  "lamp_upright mode 1": 10535,
+  "lamp_upright mode 2": 597,
+  "rig": 3867
  }
 }

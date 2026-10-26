@@ -11,11 +11,17 @@ import android.graphics.PointF
 import android.view.View
 import kotlin.math.min
 
-/** The analysed frame, fitted to the view, with the vortex rope or the particle boxes drawn on it. */
+/**
+ * What was found, fitted to the view: the vortex rope (mask, edges, centreline, center point) or the particle boxes.
+ * Live, it draws the analysed frame under them; over a playing video (Analyze first) it draws only them, fitted to
+ * the video's size the same way the video is.
+ */
 class OverlayView(context: Context) : View(context) {
     private var frame: Bitmap? = null
+    private var contentW = 0
+    private var contentH = 0
     private var mask: Bitmap? = null
-    private var vortex: VortexDetector.Result? = null
+    private var rope: RopeResult? = null
     private var boxes: List<ParticleDetector.Box> = emptyList()
     private val boxPaint = Paint().apply { style = Paint.Style.STROKE; color = Color.rgb(255, 212, 0); strokeWidth = 2f }
     private val maskPaint = Paint().apply { isFilterBitmap = false }
@@ -23,35 +29,45 @@ class OverlayView(context: Context) : View(context) {
     private val midPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.rgb(255, 212, 0) }
     private val pointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(255, 59, 59) }
 
-    fun showVortex(frame: Bitmap, r: VortexDetector.Result) {
-        val px = IntArray(VortexDetector.H * VortexDetector.W)
-        r.rope?.let { rope -> for (i in px.indices) if (rope[i].toInt() == 1) px[i] = Color.argb(110, 0, 229, 255) }
+    /** The rope on `frame` (live), or on a video of contentW x contentH shown under this view (frame null). */
+    fun showRope(frame: Bitmap?, r: RopeResult, contentW: Int = frame?.width ?: 0, contentH: Int = frame?.height ?: 0) {
+        val px = IntArray(r.maskW * r.maskH)
+        r.mask?.let { m -> for (i in px.indices) if (m[i].toInt() == 1) px[i] = Color.argb(110, 0, 229, 255) }
         this.frame = frame
-        mask = Bitmap.createBitmap(px, VortexDetector.W, VortexDetector.H, Bitmap.Config.ARGB_8888)
-        vortex = r
+        this.contentW = contentW
+        this.contentH = contentH
+        mask = Bitmap.createBitmap(px, r.maskW, r.maskH, Bitmap.Config.ARGB_8888)
+        rope = r
         boxes = emptyList()
         invalidate()
     }
 
     fun showParticles(frame: Bitmap, r: ParticleDetector.Result) {
         this.frame = frame
+        contentW = frame.width
+        contentH = frame.height
         mask = null
-        vortex = null
+        rope = null
         boxes = r.boxes
         invalidate()
     }
 
+    fun clear() {
+        frame = null; mask = null; rope = null; boxes = emptyList()
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
-        val f = frame ?: return
-        val s = min(width.toFloat() / f.width, height.toFloat() / f.height)
+        if (contentW <= 0 || contentH <= 0) return
+        val s = min(width.toFloat() / contentW, height.toFloat() / contentH)
         canvas.save()
-        canvas.translate((width - f.width * s) / 2, (height - f.height * s) / 2)
+        canvas.translate((width - contentW * s) / 2, (height - contentH * s) / 2)
         canvas.scale(s, s)
-        canvas.drawBitmap(f, 0f, 0f, null)
-        vortex?.let { r ->
+        frame?.let { canvas.drawBitmap(it, 0f, 0f, null) }
+        rope?.let { r ->
             // the results are in the picture (the frame turned by r.turn clockwise): turn them back onto the frame
             val back = Matrix()
-            if (r.turn == 90) { back.postRotate(-90f); back.postTranslate(0f, f.height.toFloat()) }
+            if (r.turn == 90) { back.postRotate(-90f); back.postTranslate(0f, contentH.toFloat()) }
             canvas.save()
             canvas.concat(back)
             mask?.let { canvas.drawBitmap(it, Matrix().apply { setScale(1 / r.scale, 1 / r.scale) }, maskPaint) }
