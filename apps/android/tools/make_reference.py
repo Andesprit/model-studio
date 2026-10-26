@@ -11,7 +11,7 @@ on those images, for SmokeTest.kt to compare against:
   vortex:    rope masks of model studio's lamp file in mode 1 and 2, on a lying and an upright lamp (the app runs the
              bare network from tools/export_lamp_model.py and turns the frame itself, so the test checks both branches)
   rig:       the rig vortex mask of model studio's rig file (vortex_detector_fp32_with_pipeline.onnx) on a rig frame;
-             copies that file and its INT8 original (vortex_detector/models/vortex_detector_int8.onnx) into the app
+             copies its INT8 original (vortex_detector/models/vortex_detector_int8.onnx) into the app
 """
 import json
 import os
@@ -89,7 +89,6 @@ def main():
             (TEST / f"{image}_rope_mode{mode}.bin").write_bytes((out > 0).astype(np.uint8).tobytes())
             vortex[f"{image} mode {mode}"] = int((out > 0).sum())
 
-    shutil.copy(RIG_MODEL, ASSETS / "rig_vortex_fp32.onnx")
     shutil.copy(RIG_INT8, ASSETS / "rig_vortex_int8.onnx")
     cv2.imwrite(str(TEST / "rig.png"), cv2.imread(str(RIG_IMAGE)))
     x = rig_input(cv2.imread(str(TEST / "rig.png")))

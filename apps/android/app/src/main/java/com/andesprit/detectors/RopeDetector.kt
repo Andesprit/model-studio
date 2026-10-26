@@ -4,9 +4,6 @@ import android.graphics.Bitmap
 
 /** The two vortex rope detectors (VortexDetector for the lamp, RigDetector for the rig), as the screen uses them. */
 interface RopeDetector : AutoCloseable {
-    /** What runs the model: the chosen backend, or the CPU fallback with the reason. */
-    val backendNote: String
-
     /** A new video or camera start: start the measurements (and the lamp's orientation) over. */
     fun reset()
 
@@ -57,11 +54,4 @@ class RopeResult(
         }
         return RopeResult(m, maskW, maskH, scale, turn, step, header, networkMs, runs)
     }
-}
-
-/** Where a vortex model runs. */
-enum class Backend(val label: String) {
-    CPU_FP32("CPU fp32"),
-    CPU_INT8("CPU INT8"),
-    NNAPI("NNAPI (GPU / AI chip)"),
 }

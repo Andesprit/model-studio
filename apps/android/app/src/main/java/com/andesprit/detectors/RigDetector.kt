@@ -3,21 +3,19 @@ package com.andesprit.detectors
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
-import ai.onnxruntime.providers.NNAPIFlags
 import android.content.Context
 import android.graphics.Bitmap
 import java.nio.FloatBuffer
-import java.util.EnumSet
 import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * The rig vortex model, as model studio's "Rig vortex" runs it (vortex_detector_fp32_with_pipeline.onnx, its INT8
- * original vortex_detector_int8.onnx): the frame scaled by SCALE (not fitted), gray (BT.601), top-left on the
+ * The rig vortex model, as model studio's "Rig vortex" runs it (vortex_detector_fp32_with_pipeline.onnx; here its INT8
+ * original vortex_detector_int8.onnx, on the CPU): the frame scaled by SCALE (not fitted), gray (BT.601), top-left on the
  * H x W canvas with zero padding, /255; rope = logits > 0, all of it (no largest piece, as model studio). Measured by
  * RopeAnalyzer as vortex.pipeline.js does (the rope runs left to right). A rig frame is about 795 x 271.
  */
-class RigDetector(context: Context, backend: Backend = Backend.CPU_INT8) : RopeDetector {
+class RigDetector(context: Context) : RopeDetector {
     companion object {
         const val H = 160
         const val W = 416
@@ -25,27 +23,11 @@ class RigDetector(context: Context, backend: Backend = Backend.CPU_INT8) : RopeD
     }
 
     private val env = OrtEnvironment.getEnvironment()
-    override var backendNote: String = backend.label
-        private set
-    private val session: OrtSession
+    private val session: OrtSession = env.createSession(
+        context.assets.open("rig_vortex_int8.onnx").use { it.readBytes() },
+        OrtSession.SessionOptions().apply { setIntraOpNumThreads(4) },
+    )
     private val analyzer = RopeAnalyzer()
-
-    init {
-        val open = { b: Backend ->
-            val asset = if (b == Backend.CPU_INT8) "rig_vortex_int8.onnx" else "rig_vortex_fp32.onnx"
-            env.createSession(context.assets.open(asset).use { it.readBytes() }, OrtSession.SessionOptions().apply {
-                setIntraOpNumThreads(4)
-                if (b == Backend.NNAPI) addNnapi(EnumSet.of(NNAPIFlags.USE_FP16))
-            })
-        }
-        session = try {
-            open(backend)
-        } catch (e: Exception) {
-            if (backend != Backend.NNAPI) throw e
-            backendNote = "${Backend.CPU_FP32.label} (NNAPI failed: ${e.message?.take(80)})"
-            open(Backend.CPU_FP32)
-        }
-    }
 
     override fun reset() = analyzer.reset()
 

@@ -3,12 +3,10 @@ package com.andesprit.detectors
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
-import ai.onnxruntime.providers.NNAPIFlags
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import java.nio.FloatBuffer
-import java.util.EnumSet
 import kotlin.math.exp
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -25,12 +23,9 @@ import kotlin.math.roundToInt
  *   rope, and warns "no lamp in view" after LAMP_MISSING_FRAMES;
  * - only the largest rope piece is kept, and RopeAnalyzer measures it.
  * Not ported: the tilt warning (this model was trained on lamps tilted up to 45 deg).
- *
- * `backend` picks the model file and where it runs: CPU INT8 runs vortex_lamp_rope_int8.onnx, the others the fp32 file. There is one session per canvas shape (the frame as
- * is, 416 x 232, and turned, 232 x 416), each with its shape fixed: NNAPI handles fixed shapes, not free ones. If
- * NNAPI can't be set up the CPU (fp32) runs instead, and `backendNote` says so.
+ * The network runs INT8 (vortex_lamp_rope_int8.onnx) on the CPU, the faster choice on phones.
  */
-class VortexDetector(context: Context, backend: Backend = Backend.CPU_FP32) : RopeDetector {
+class VortexDetector(context: Context) : RopeDetector {
     companion object {
         const val H = 416
         const val W = 232
@@ -58,32 +53,10 @@ class VortexDetector(context: Context, backend: Backend = Backend.CPU_FP32) : Ro
     )
 
     private val env = OrtEnvironment.getEnvironment()
-    override var backendNote: String = backend.label
-        private set
-    private val sessions: Map<Int, OrtSession> // by canvas height: H (as is) or W (turned)
-
-    init {
-        val open = { b: Backend ->
-            val asset = if (b == Backend.CPU_INT8) "vortex_lamp_rope_int8.onnx" else "vortex_lamp_rope.onnx"
-            val bytes = context.assets.open(asset).use { it.readBytes() }
-            listOf(H to W, W to H).associate { (h, w) ->
-                h to env.createSession(bytes, OrtSession.SessionOptions().apply {
-                    setIntraOpNumThreads(4)
-                    setSymbolicDimensionValue("h", h.toLong())
-                    setSymbolicDimensionValue("w", w.toLong())
-                    // fp16 lets the GPU or AI chip compute in half precision, as model studio's GPU file does
-                    if (b == Backend.NNAPI) addNnapi(EnumSet.of(NNAPIFlags.USE_FP16))
-                })
-            }
-        }
-        sessions = try {
-            open(backend)
-        } catch (e: Exception) {
-            if (backend != Backend.NNAPI) throw e
-            backendNote = "${Backend.CPU_FP32.label} (NNAPI failed: ${e.message?.take(80)})"
-            open(Backend.CPU_FP32)
-        }
-    }
+    private val session: OrtSession = env.createSession(
+        context.assets.open("vortex_lamp_rope_int8.onnx").use { it.readBytes() },
+        OrtSession.SessionOptions().apply { setIntraOpNumThreads(4) },
+    )
     private val analyzer = RopeAnalyzer()
 
     private var sumVertical = 0.0
@@ -137,7 +110,7 @@ class VortexDetector(context: Context, backend: Backend = Backend.CPU_FP32) : Ro
 
     private fun network(x: FloatArray, h: Int, w: Int): FloatArray =
         OnnxTensor.createTensor(env, FloatBuffer.wrap(x), longArrayOf(1, 1, h.toLong(), w.toLong())).use { t ->
-            sessions.getValue(h).run(mapOf("x" to t)).use { out ->
+            session.run(mapOf("x" to t)).use { out ->
                 val b = (out.get(0) as OnnxTensor).floatBuffer
                 FloatArray(b.remaining()).also { b.get(it) }
             }
@@ -192,7 +165,7 @@ class VortexDetector(context: Context, backend: Backend = Backend.CPU_FP32) : Ro
 
     override fun summary() = analyzer.summary()
 
-    override fun close() = sessions.values.forEach { it.close() }
+    override fun close() = session.close()
 }
 
 /**

@@ -24,10 +24,9 @@ class SmokeTest {
 
     @Test
     fun vortexMatchesDesktop() {
-        // every backend: INT8 and NNAPI's half precision move a few more boundary cells than fp32 on the CPU
-        for ((backend, bars) in listOf(Backend.CPU_FP32 to (0.98 to 0.9), Backend.CPU_INT8 to (0.95 to 0.9),
-                Backend.NNAPI to (0.95 to 0.9))) VortexDetector(app, backend).use { d ->
-            Log.i("SmokeTest", "vortex backend ${backend.label}: runs on ${d.backendNote}")
+        // INT8 against model studio's fp16 file: a few more boundary cells move than the runtimes alone would
+        val bars = 0.95 to 0.9
+        VortexDetector(app).use { d ->
             for (image in listOf("lamp", "lamp_upright")) {
                 val frame = test.assets.open("$image.png").use { BitmapFactory.decodeStream(it) }
                 // the desktop's own input: the runtimes must agree (model studio's fp16 file, the app's network);
@@ -41,15 +40,15 @@ class SmokeTest {
                         val out = d.run(input.second, mode)
                         val want = wants.getValue(mode)
                         val rope = iou(ByteArray(out.size) { if (out[it] > 0f) 1 else 0 }, want)
-                        Log.i("SmokeTest", "vortex ${backend.name} $image, ${input.first}, mode $mode${if (mode == main) " (used)" else ""}: rope IoU %.4f (${want.count { it.toInt() == 1 }} cells)".format(rope))
-                        if (mode == main) assertTrue("rope IoU $rope, ${backend.name}, $image, ${input.first}, mode $mode", rope > bar)
+                        Log.i("SmokeTest", "vortex $image, ${input.first}, mode $mode${if (mode == main) " (used)" else ""}: rope IoU %.4f (${want.count { it.toInt() == 1 }} cells)".format(rope))
+                        if (mode == main) assertTrue("rope IoU $rope, $image, ${input.first}, mode $mode", rope > bar)
                     }
                 }
                 d.reset()
                 // one model run: the frames after the orientation locks run one branch
                 val ms = (0 until 16).map { d.detect(frame, it / 30.0) }.filter { it.branches == 1 }.map { it.networkMs }
                 val r = d.detect(frame, 0.6)
-                Log.i("SmokeTest", "vortex ${backend.name} $image: ${r.orientation}, strength %.3f, thickness ${r.step?.metrics?.get("thickness")}, one model run median %.1f ms"
+                Log.i("SmokeTest", "vortex $image: ${r.orientation}, strength %.3f, thickness ${r.step?.metrics?.get("thickness")}, one model run median %.1f ms"
                     .format(r.strength, ms.sorted()[ms.size / 2]))
                 // both end up vertical: the lying lamp's picture is landscape, so the app turns it upright first
                 assertTrue("$image orientation ${r.orientation}, turn ${r.turn}", r.orientation == "vertical" && r.turn == (if (image == "lamp") 90 else 0))
@@ -62,16 +61,16 @@ class SmokeTest {
         val frame = test.assets.open("rig.png").use { BitmapFactory.decodeStream(it) }
         val desktop = floats(test.assets.open("rig_input.bin").readBytes())
         val want = test.assets.open("rig_mask.bin").readBytes()
-        for ((backend, bars) in listOf(Backend.CPU_FP32 to (0.99 to 0.85), Backend.CPU_INT8 to (0.97 to 0.85),
-                Backend.NNAPI to (0.97 to 0.85))) RigDetector(app, backend).use { d ->
+        val bars = 0.97 to 0.85 // INT8 against model studio's fp32 rig file
+        RigDetector(app).use { d ->
             for ((input, bar) in listOf("desktop input" to desktop to bars.first, "app input" to d.preprocess(frame) to bars.second)) {
                 val out = d.run(input.second)
                 val rope = iou(ByteArray(out.size) { if (out[it] > 0f) 1 else 0 }, want)
-                Log.i("SmokeTest", "rig ${backend.name} (${d.backendNote}), ${input.first}: rope IoU %.4f (${want.count { it.toInt() == 1 }} cells)".format(rope))
-                assertTrue("rig IoU $rope, ${backend.name}, ${input.first}", rope > bar)
+                Log.i("SmokeTest", "rig, ${input.first}: rope IoU %.4f (${want.count { it.toInt() == 1 }} cells)".format(rope))
+                assertTrue("rig IoU $rope, ${input.first}", rope > bar)
             }
             val runs = (0 until 10).map { d.detectRope(frame, it / 30.0) }
-            Log.i("SmokeTest", "rig ${backend.name}: thickness ${runs.last().step?.metrics?.get("thickness")}, model median %.1f ms"
+            Log.i("SmokeTest", "rig: thickness ${runs.last().step?.metrics?.get("thickness")}, model median %.1f ms"
                 .format(runs.map { it.networkMs }.sorted()[5]))
             assertTrue("rig present", runs.last().step?.metrics?.get("present") != "0.0 %")
         }

@@ -43,8 +43,8 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * One screen: pick a detector (vortex lamp, rig vortex, particles) and where the vortex models run, then the camera or
- * a video. A video runs live (every frame as fast as the model allows, each result shown as it comes) or, for the
+ * One screen: pick a detector (vortex lamp, rig vortex, particles), then the camera or a video. The vortex models run
+ * INT8 on the CPU. A video runs live (every frame as fast as the model allows, each result shown as it comes) or, for the
  * vortex detectors, "Analyze first": frames at ANALYZE_RATES per second of video are analysed with a progress bar
  * (Stop cancels), then the video plays with the stored results drawn at its current time, and the summary.
  */
@@ -73,7 +73,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var gpuBox: CheckBox
     @Volatile private var kind = Kind.LAMP
     @Volatile private var running = false
-    @Volatile private var backend = Backend.CPU_INT8
     private var lamp: VortexDetector? = null
     private var rig: RigDetector? = null
     private var particles: ParticleDetector? = null
@@ -105,14 +104,6 @@ class MainActivity : ComponentActivity() {
             worker.execute { lamp?.reset(); rig?.reset(); modelTimes.clear() }
         }
 
-        // where the vortex models run: changing it reloads them and starts the timing over
-        val backends = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
-        for (b in Backend.entries) backends.addView(RadioButton(this).apply { text = b.label; id = 100 + b.ordinal })
-        backends.check(100 + backend.ordinal)
-        backends.setOnCheckedChangeListener { _, id ->
-            backend = Backend.entries[id - 100]
-            worker.execute { lamp?.close(); lamp = null; rig?.close(); rig = null; modelTimes.clear() }
-        }
         gpuBox = CheckBox(this).apply { text = "GPU (particles)" }
         gpuBox.setOnCheckedChangeListener { _, _ -> worker.execute { particles?.close(); particles = null } }
 
@@ -139,7 +130,6 @@ class MainActivity : ComponentActivity() {
         stage.addView(overlay, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
 
         root.addView(which, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        root.addView(backends, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(progress, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(status, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
@@ -293,7 +283,7 @@ class MainActivity : ComponentActivity() {
                     stored.add(Stored(t, packed, rle))
                     val shown = i + 1
                     runOnUiThread { progress.progress = shown }
-                    setStatus("Analysing $shown / $total frames (${100 * shown / total} %), ${d.backendNote}")
+                    setStatus("Analysing $shown / $total frames (${100 * shown / total} %)")
                 }
                 val done = stored.size
                 if (!running || done == 0) {
@@ -301,7 +291,7 @@ class MainActivity : ComponentActivity() {
                     return@execute
                 }
                 val seconds = (System.nanoTime() - t0) / 1e9
-                val about = "Analysed first: $done frames at $rate per second in %.1f s, %s".format(seconds, modelLine(d))
+                val about = "Analysed first: $done frames at $rate per second in %.1f s, %s".format(seconds, modelLine())
                 val summary = listOf(about, "", "Summary:") + d.summary()
                 runOnUiThread { progress.visibility = View.GONE; play(uri, stored, rate, v.width, v.height, summary) }
             } catch (e: Exception) {
@@ -352,8 +342,8 @@ class MainActivity : ComponentActivity() {
 
     /** Runs on the worker thread. */
     private fun ropeDetector(): RopeDetector = when (kind) {
-        Kind.RIG -> rig ?: RigDetector(this, backend).also { rig = it; modelTimes.clear() }
-        else -> lamp ?: VortexDetector(this, backend).also { lamp = it; modelTimes.clear() }
+        Kind.RIG -> rig ?: RigDetector(this).also { rig = it; modelTimes.clear() }
+        else -> lamp ?: VortexDetector(this).also { lamp = it; modelTimes.clear() }
     }
 
     /**
@@ -368,7 +358,7 @@ class MainActivity : ComponentActivity() {
             val r = d.detectRope(frame, t)
             modelTime(r)
             runOnUiThread { overlay.showRope(if (overPreview) null else frame, r, frame.width, frame.height) }
-            text = "${r.header}\n${readings(r)}\n${modelLine(d)}"
+            text = "${r.header}\n${readings(r)}\n${modelLine()}"
         } else {
             val d = particles ?: ParticleDetector(this, gpuBox.isChecked).also { particles = it }
             val r = d.detect(frame)
@@ -409,10 +399,10 @@ class MainActivity : ComponentActivity() {
         while (modelTimes.size > MODEL_TIMES) modelTimes.removeFirst()
     }
 
-    /** The last model run and the median over the last MODEL_TIMES frames, on the backend that ran them. */
-    private fun modelLine(d: RopeDetector): String {
+    /** The last model run and the median over the last MODEL_TIMES frames. */
+    private fun modelLine(): String {
         val median = modelTimes.sorted().getOrNull(modelTimes.size / 2) ?: 0.0
-        return "model %.0f ms per run, median %.0f ms over %d frames (${d.backendNote})".format(modelTimes.lastOrNull() ?: 0.0, median, modelTimes.size)
+        return "model %.0f ms per run, median %.0f ms over %d frames".format(modelTimes.lastOrNull() ?: 0.0, median, modelTimes.size)
     }
 
     private fun rotate(b: Bitmap, deg: Int): Bitmap =

@@ -1,4 +1,4 @@
-"""The lamp rope network for the app (app/src/main/assets/vortex_lamp_rope.onnx), fp32, from its training checkpoint.
+"""The lamp rope network for the app (app/src/main/assets/vortex_lamp_rope_int8.onnx), INT8, from its training checkpoint.
 
     PIPE=D:/pipe D:/pipe/vortex_detector/.venv/Scripts/python.exe tools/export_lamp_model.py
 
@@ -7,12 +7,12 @@ PIPE is the research folder that holds vortex_detector/ (default D:/pipe).
 Model studio's file (vortex_lamp_auto_fp16.onnx) wraps the same network in If nodes that pick the branch: as is
 ("logits_asis", mode 2), or the frame turned 90 deg counter-clockwise and the mask turned back ("logits", mode 1).
 The app runs the bare network and turns the frame itself (VortexDetector.runBranch): one copy of the weights instead
-of three, and no If nodes, which NNAPI can't run. fp32: ONNX Runtime's CPU kernels have no fp16 convolutions.
+of three.
 
-Also writes vortex_lamp_rope_int8.onnx: the same network quantised for the phone's CPU (onnxruntime quantize_static,
+The network is exported in fp32 (a temporary file) and quantised for the phone's CPU (onnxruntime quantize_static,
 QDQ, per-channel int8 weights, uint8 activations, MinMax), calibrated on CALIB_FRAMES lamp training frames, half as
 the lamp_fixed crop and half as the full phone frame, each fitted into the canvas as the app does, as is and turned
-(both branches' inputs).
+(both branches' inputs). Only the INT8 file goes in the app: it is faster on phones.
 
 Checks on the desktop that the bare network (fp32 and int8) plus the app's turning gives model studio's masks, on the
 smoke test's lamp image lying and upright, in both branches.
@@ -42,7 +42,6 @@ CHECKPOINT = PIPE / "vortex_detector/runs/lamp_r2_lite0_bg_strong_scale_tilt_ste
 STUDIO_MODEL = PIPE / ("vortex_detector/models/lamp_r2_lite0_bg_strong_scale_tilt_steep_all_rig8_rigall_tail20_nogate/"
                        "vortex_lamp_auto_lamp_r2_lite0_bg_strong_scale_tilt_steep_all_rig8_rigall_tail20_nogate_fp16_batch.onnx")
 IMAGE = PIPE / "vortex_detector/lamp_fixed/frames/IMG_2117_f00006.png"
-OUT = APP / "app/src/main/assets/vortex_lamp_rope.onnx"
 OUT_INT8 = APP / "app/src/main/assets/vortex_lamp_rope_int8.onnx"
 CALIB_FRAMES = 200
 H, W = 416, 232
@@ -118,10 +117,10 @@ class Reader(CalibrationDataReader):
         return None if x is None else {"x": x}
 
 
-def quantise():
+def quantise(fp32: Path):
     with tempfile.TemporaryDirectory() as d:
         prep = Path(d) / "prep.onnx"
-        quant_pre_process(str(OUT), str(prep), skip_symbolic_shape=False)
+        quant_pre_process(str(fp32), str(prep), skip_symbolic_shape=False)
         quantize_static(str(prep), str(OUT_INT8), Reader(calibration()), quant_format=QuantFormat.QDQ, per_channel=True,
                         activation_type=QuantType.QUInt8, weight_type=QuantType.QInt8,
                         calibrate_method=CalibrationMethod.MinMax)
@@ -134,14 +133,15 @@ def main():
                               decoder_channels=(64, 32, 16, 8, 8)))
     net.load_state_dict(ck["model"])
     model = Pad32(net).eval()
-    torch.onnx.export(model, torch.zeros(1, 1, H, W), str(OUT), input_names=["x"], output_names=["y"], opset_version=17,
+    tmp = tempfile.TemporaryDirectory()
+    fp32 = Path(tmp.name) / "vortex_lamp_rope_fp32.onnx"
+    torch.onnx.export(model, torch.zeros(1, 1, H, W), str(fp32), input_names=["x"], output_names=["y"], opset_version=17,
                       dynamo=False, dynamic_axes={"x": {2: "h", 3: "w"}, "y": {2: "h", 3: "w"}})
-    print(f"{OUT.name}: {OUT.stat().st_size / 1e6:.1f} MB")
-    quantise()
+    quantise(fp32)
 
     studio = ort.InferenceSession(str(STUDIO_MODEL), providers=["CPUExecutionProvider"])
     lying = cv2.imread(str(IMAGE))
-    for model in (OUT, OUT_INT8):
+    for model in (fp32, OUT_INT8):
         app = ort.InferenceSession(str(model), providers=["CPUExecutionProvider"])
         for label, bgr in [("lying", lying), ("upright", cv2.rotate(lying, cv2.ROTATE_90_CLOCKWISE))]:
             x = lamp_input(bgr)
@@ -151,6 +151,7 @@ def main():
                 union = (want | got).sum()
                 print(f"{model.stem}, {label} lamp, mode {mode}: rope cells {got.sum()} vs {want.sum()}, "
                       f"IoU {(want & got).sum() / union if union else 1:.4f}")
+    tmp.cleanup()
 
 
 if __name__ == "__main__":
