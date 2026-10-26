@@ -367,8 +367,12 @@ hand-labelled lamp frames from seven phone videos, with room photos blended into
 random zoom. It runs with no gate: the earlier water and tube gates clipped the rope or broke on busy backgrounds,
 and this rope network rarely paints outside the tube by itself. On 50 never-trained frames in front of a patterned
 bag it scores rope IoU 0.900 through the app (water gate 0.875, tube gate 0.886, the model before both 0.525). The write-up is in that repo, in `docs/background_augmentation.md`,
-`docs/lamp_frames.md` and `docs/model_studio.md`. What matters here (the orientation and tilt figures below were
-measured on the previous model):
+`docs/lamp_frames.md` and `docs/model_studio.md`. Since 2026-10-26 the room photo, zoom, tilt, blur and defocus are
+also applied to the rig frames (8 % of them, none in the last 20 % of training; lamp frames 80 %), so the same file
+also finds the rig vortex tilted or with a room behind it: rig IoU turned 45° 0.55 -> 0.90, rig edge error on
+upright frames 0.82 -> 0.83 px, test round 0.909 -> 0.914. Every try is in that repo's
+`docs/phone_augmentation_all_frames.md`. What matters here (the orientation figures below were measured on an
+earlier model):
 
 - **Colour.** Any light colour works. The model takes gray, and the app converts frames before the model.
 - **Upright or sideways, chosen automatically.** A landscape picture (a phone held sideways, a webcam) is turned
@@ -397,7 +401,8 @@ measured on the previous model):
   | tilt | 0° | 15° | 30° | 45° | -45° |
   |---|---|---|---|---|---|
   | before | 0.90 | 0.84 | 0.26 | 0.05 | 0.02 |
-  | now | 0.89 | 0.89 | 0.89 | 0.87 | 0.89 |
+  | tilt training (2026-10-23) | 0.89 | 0.89 | 0.89 | 0.87 | 0.89 |
+  | now (2026-10-26) | 0.90 | 0.89 | 0.89 | 0.88 | 0.88 |
 
   These are phone photos turned, not real tilted footage. The pipeline still estimates the tilt from the mask
   and warns above 15°.
