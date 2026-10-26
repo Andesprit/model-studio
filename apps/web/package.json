@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@detect/core": "*",
+    "mediabunny": "1.61.3",
     "onnxruntime-web": "^1.23.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"

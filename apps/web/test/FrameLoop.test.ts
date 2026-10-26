@@ -10,6 +10,9 @@ vi.mock("@detect/core", () => ({
   decodeAll: () => ({}),
   mergeResults: (results: unknown[]) => results[0] ?? {},
 }));
+/** What openDecodedFrames gives analyze(): null (can't decode: seek), or frames from a test. */
+const decoding = vi.hoisted(() => ({ open: (() => Promise.resolve(null)) as (...args: unknown[]) => Promise<unknown> }));
+vi.mock("../src/adapters/decodedFrames", () => ({ openDecodedFrames: (...args: unknown[]) => decoding.open(...args) }));
 vi.mock("../src/adapters/frameGrabber", () => ({ FrameGrabber: class {
   grab() { return { frame: {}, transform: { frameWidth: 1, frameHeight: 1 } }; }
 } }));
@@ -279,7 +282,8 @@ describe("analyze first", () => {
     const progress = vi.fn();
     const report = await loop.analyze(30, progress, new AbortController().signal);
     expect(report).toMatchObject({ fps: 30, frames: 4 });
-    expect(Object.keys(report!.perFrameMs)).toEqual(["seek", "prepare", "model", "measure"]);
+    expect(Object.keys(report!.perFrameMs)).toEqual(["frame", "prepare", "model", "measure"]);
+    expect(report!.reading).toBe("seek"); // no file given: seeks the video
     expect(model.run).toHaveBeenCalledTimes(4); // 0, 1/30, 2/30, 3/30 s
     expect(pipeline.run.mock.calls.map((c) => c[1])).toEqual([0, 1 / 30, 2 / 30, 3 / 30]);
     expect(progress).toHaveBeenLastCalledWith(4, 4);
@@ -373,6 +377,55 @@ describe("analyze first", () => {
     for (const g of four.got) expect(g.output).toBeCloseTo(g.t);
     // frames 0-3 in one call with mode 0; frames 2 and 3 then want mode 1, so they run alone; frames 4-7 in one call
     expect(four.calls).toEqual([{ n: 4, mode: 0 }, { n: 1, mode: 1 }, { n: 1, mode: 1 }, { n: 4, mode: 1 }]);
+  });
+
+  describe("frames decoded in a worker", () => {
+    afterEach(() => { decoding.open = () => Promise.resolve(null); });
+    /** Decoded frames as the worker sends them: each carries its own time in its tensor. */
+    const decodedFrames = (times: number[], failAt = -1) => {
+      let i = 0;
+      return {
+        next: vi.fn(async () => {
+          if (i === failAt) throw new Error("decoder broke");
+          const t = times[i];
+          return { index: i++, decodeMs: 1, preMs: 2, inputs: [{ tensor: { dims: [1], data: Float32Array.of(t) }, transform: { frameWidth: 1, frameHeight: 1 }, turn: 0 }] };
+        }),
+        close: vi.fn(),
+      };
+    };
+
+    it("uses the decoded frames instead of seeking, at the same times", async () => {
+      const { loop, video, model, pipeline } = await analyzeSetup(0.3);
+      let frames!: ReturnType<typeof decodedFrames>;
+      let asked: number[] = [];
+      decoding.open = async (_file, times) => { asked = times as number[]; frames = decodedFrames(asked); return frames; };
+      const seeks: number[] = [];
+      Object.defineProperty(video, "currentTime", { get: () => 0, set: (t: number) => { seeks.push(t); setTimeout(() => video.dispatchEvent(new Event("seeked")), 0); } });
+      const report = await loop.analyze(10, () => {}, new AbortController().signal, true, 1, new Blob());
+      expect(asked).toEqual([0, 0.1, 0.2, 0.3]);
+      expect(report).toMatchObject({ reading: "decoded", frames: 4 });
+      expect(seeks).toEqual([]);
+      expect(pipeline.run.mock.calls.map((c) => c[1])).toEqual(asked);
+      // each frame's own picture went to the model (float32 in the tensor)
+      expect(model.run.mock.calls.map((c) => Math.round((c[0] as { data: Float32Array }).data[0] * 1000) / 1000)).toEqual(asked);
+      expect(frames.close).toHaveBeenCalled();
+    });
+
+    it("seeks when the frames can't be decoded, and starts over seeking when decoding fails midway", async () => {
+      const { loop, pipeline } = await analyzeSetup(0.3);
+      expect(await loop.analyze(10, () => {}, new AbortController().signal, true, 1, new Blob())).toMatchObject({ reading: "seek", frames: 4 });
+      pipeline.run.mockClear();
+      let frames!: ReturnType<typeof decodedFrames>;
+      decoding.open = async (_file, times) => (frames = decodedFrames(times as number[], 2));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const report = await loop.analyze(10, () => {}, new AbortController().signal, true, 1, new Blob());
+      expect(report).toMatchObject({ reading: "seek", frames: 4 });
+      expect(warn).toHaveBeenCalledOnce();
+      expect(frames.close).toHaveBeenCalled();
+      // two frames from the decoder, then the whole video again from the start, seeking
+      expect(pipeline.run.mock.calls.map((c) => c[1])).toEqual([0, 0.1, 0, 0.1, 0.2, 0.3]);
+      warn.mockRestore();
+    });
   });
 
   it("stops when aborted and goes back to live analysis", async () => {

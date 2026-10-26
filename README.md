@@ -55,8 +55,11 @@ See [the main path](docs/how-it-works.md#the-main-path) and the [measured before
    After choosing a video file, pick **Analyze first** or **Live**. **Analyze first** analyzes the video at
    10, 15 or 30 frames per second (10 by default; fewer is faster) with a progress bar and **Cancel**, then plays
    it with the stored results, showing the nearest analyzed frame, so playback never lags behind on a slow
-   device. Its summary covers the whole video, and a line under it gives the time per frame spent seeking,
-   preparing, in the model and measuring (also in the downloaded results). **Live** plays right
+   device. Where the browser has WebCodecs, the frames are decoded in order in the background (each once,
+   instead of seeking from keyframe to keyframe) and prepared there too; elsewhere, or if decoding fails, it
+   seeks. On the GPU the model takes 4 frames per call. Its summary covers the whole video, and a line under it
+   gives the time per frame spent getting the frame, preparing, in the model and measuring (also in the
+   downloaded results). **Live** plays right
    away and analyzes as it goes, skipping frames when the device is slow. Changing a model or setting after
    the analysis, including drawing a calibration line, goes back to live analysis.
    For the lamp, hold the phone upright with the lamp about 70 % of the frame's width

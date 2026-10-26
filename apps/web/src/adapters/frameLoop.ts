@@ -1,4 +1,5 @@
 import { decodeAll, mergeResults, toTensor, type ModelConfig, type ModelInput, type PipelineRunner, type Result, type SegmentationMap, type Tensor } from "@detect/core";
+import { openDecodedFrames, type DecodedFrames } from "./decodedFrames";
 import { FrameGrabber } from "./frameGrabber";
 import { Renderer } from "./renderer";
 import type { ModelRuntime } from "./runtime";
@@ -78,12 +79,17 @@ export const ANALYZE_BATCH = 4;
 /** What analyze() did: the rate, the frames, the wall time, and the mean time per frame of each step. */
 export interface AnalysisReport {
   fps: number;
+  /** How the frames were read: decoded in order in a worker (and prepared there), or by seeking the video. */
+  reading: "decoded" | "seek";
   /** Frames per model call (1: one at a time). */
   batch: number;
   frames: number;
   seconds: number;
-  /** Milliseconds per frame: seeking to the frame, preparing the models' inputs, the models, the pipelines. */
-  perFrameMs: { seek: number; prepare: number; model: number; measure: number };
+  /**
+   * Milliseconds per frame: waiting for the frame (the seek, or for the worker's next decoded frame), preparing the
+   * models' inputs (in the worker when decoded), the models, the pipelines.
+   */
+  perFrameMs: { frame: number; prepare: number; model: number; measure: number };
 }
 
 /** A loaded model. Replaced (never mutated) on change, so an in-flight frame can tell it went stale. */
@@ -253,11 +259,24 @@ export class FrameLoop {
    * run on one frame, the next is already sought and its inputs grabbed (`overlap`; the models and pipelines still
    * take the frames one at a time, in order, so the results are the same as without it). On the GPU, the model runs
    * on `batchSize` frames per call (see ANALYZE_BATCH; each frame's pipeline still decides its own feeds). Playback then draws the
-   * stored results instead of running the models, so it never lags behind the video. Resolves with what it did when
-   * done; null when aborted or a model, config or pipeline changed meanwhile. Errors are thrown.
+   * stored results instead of running the models, so it never lags behind the video. With `file` (the video's file)
+   * and WebCodecs, the frames are decoded in order in a worker and prepared there (decodedFrames.ts) instead of
+   * seeking the page's video; if that can't start or fails, it seeks. Resolves with what it did when done; null when
+   * aborted or a model, config or pipeline changed meanwhile. Errors are thrown.
    */
   async analyze(fps: number, onProgress: (done: number, total: number) => void, signal: AbortSignal,
-    overlap = true, batchSize = ANALYZE_BATCH): Promise<AnalysisReport | null> {
+    overlap = true, batchSize = ANALYZE_BATCH, file?: Blob): Promise<AnalysisReport | null> {
+    try {
+      return await this.analyzeOnce(fps, onProgress, signal, overlap, batchSize, file);
+    } catch (e) {
+      if (!(e instanceof DecodeFailed)) throw e;
+      console.warn(`${e.message}; seeking instead`);
+      return this.analyzeOnce(fps, onProgress, signal, overlap, batchSize);
+    }
+  }
+
+  private async analyzeOnce(fps: number, onProgress: (done: number, total: number) => void, signal: AbortSignal,
+    overlap: boolean, batchSize: number, file?: Blob): Promise<AnalysisReport | null> {
     this.stop();
     this.finished = false;
     await this.inflight;
@@ -271,7 +290,10 @@ export class FrameLoop {
     const modelPipelines = [...this.modelPipelines];
     const total = Math.max(1, Math.floor(this.video.duration * fps) + 1);
     const frames: AnalyzedFrame[] = [];
-    const ms = { seek: 0, prepare: 0, model: 0, measure: 0 };
+    const ms = { frame: 0, prepare: 0, model: 0, measure: 0 };
+    const times = Array.from({ length: total }, (_, i) => Math.min(i / fps, this.video.duration));
+    const slotIndex = slots.flatMap((s, i) => (s ? [i] : []));
+    let decoded: DecodedFrames | null = null;
     const start = performance.now();
     const failed = new Promise<never>((_, reject) => { this.rejectFrame = reject; });
     failed.catch(() => {});
@@ -279,10 +301,22 @@ export class FrameLoop {
     window.addEventListener("unhandledrejection", this.onRuntimeError);
     try {
       onProgress(0, total);
-      /** Seeks to frame i and grabs every model's input from it. */
+      if (file) {
+        decoded = await openDecodedFrames(file, times, slotIndex.map((i) => ({ input: slots[i]!.config.input, turn: this.turnFor(slots[i]!.config) })));
+      }
+      /** Frame i and every model's input from it: the worker's next decoded frame, or a seek and a grab. */
       const fetchFrame = async (i: number) => {
         const t0 = performance.now();
-        await seek(this.video, Math.min(i / fps, this.video.duration));
+        if (decoded) {
+          let f;
+          try {
+            f = await decoded.next();
+          } catch (e) {
+            throw new DecodeFailed(e instanceof Error ? e.message : String(e));
+          }
+          return { time: times[i], seekMs: performance.now() - t0, input: { slotIndex, inputs: f.inputs, preMs: f.preMs } };
+        }
+        await seek(this.video, times[i]);
         const seekMs = performance.now() - t0;
         return { time: this.video.currentTime, seekMs, input: this.prepare(slots) };
       };
@@ -316,7 +350,7 @@ export class FrameLoop {
           precomputed = unstack(outputs, group.length).map((o) => ({ outputs: o, feeds, ms: each }));
         }
         for (const [k, frame] of group.entries()) {
-          ms.seek += frame.seekMs;
+          ms.frame += frame.seekMs;
           const done = await this.runPrepared(slots, pipeline, modelPipelines, frame.input, frame.time, failed, precomputed[k]);
           if (!done) return null;
           const { result, frameWidth, frameHeight, turn, preMs, inferByModel, t2 } = done;
@@ -332,9 +366,10 @@ export class FrameLoop {
       this.replay = frames;
       this.replayFps = fps;
       const per = (v: number) => Math.round(v / total);
-      return { fps, batch, frames: total, seconds: Math.round((performance.now() - start) / 100) / 10,
-        perFrameMs: { seek: per(ms.seek), prepare: per(ms.prepare), model: per(ms.model), measure: per(ms.measure) } };
+      return { fps, reading: decoded ? "decoded" : "seek", batch, frames: total, seconds: Math.round((performance.now() - start) / 100) / 10,
+        perFrameMs: { frame: per(ms.frame), prepare: per(ms.prepare), model: per(ms.model), measure: per(ms.measure) } };
     } finally {
+      decoded?.close();
       this.analyzing = false;
       this.rejectFrame = null;
       window.removeEventListener("error", this.onRuntimeError);
@@ -526,6 +561,9 @@ export class FrameLoop {
 
 /** Turning applies only to models whose input canvas is taller than wide (the vortex lamp). */
 const portraitCanvas = (config: ModelConfig) => (config.input?.height ?? 0) > (config.input?.width ?? 0);
+
+/** Decoding the video in the worker failed: analyze() seeks instead. */
+class DecodeFailed extends Error {}
 
 /** Same extra model inputs (e.g. the lamp's branch): same names, shapes and values. */
 function sameFeeds(a: Record<string, Tensor> | undefined, b: Record<string, Tensor> | undefined): boolean {
