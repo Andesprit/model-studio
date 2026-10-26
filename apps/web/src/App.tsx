@@ -556,7 +556,7 @@ export function App() {
       if (!Number.isFinite(v.duration)) throw new Error("the video's length is unknown, so it can't be analyzed first; choose Live");
       const report = await loopRef.current!.analyze(analyzeFps, (done, total) => {
         if (analysisAbort.current === abort) setAnalysis({ done, total });
-      }, abort.signal);
+      }, abort.signal, undefined, undefined, file); // the file lets it decode frames in order instead of seeking
       if (analysisAbort.current !== abort) return; // another source replaced this one
       if (!report) {
         if (!abort.signal.aborted) setError("A model or setting changed during the analysis. Choose the video again.");
@@ -737,8 +737,10 @@ export function App() {
               : <p className="hint analysis-wait">{loading ? "Your analysis will appear when the model is ready."
                 : analysis ? "Analyzing the video first; it plays when done." : "Waiting for the first analyzed frame..."}</p>}
             {analysisReport && <p className="hint">
-              Analyzed in advance: {analysisReport.frames} frames at {analysisReport.fps} per second in {analysisReport.seconds} s.
-              Per frame: seek {analysisReport.perFrameMs.seek} ms, prepare {analysisReport.perFrameMs.prepare} ms,
+              Analyzed in advance: {analysisReport.frames} frames at {analysisReport.fps} per second in {analysisReport.seconds} s{analysisReport.batch > 1 ? `, ${analysisReport.batch} frames per model call on the GPU` : ""}.
+              {analysisReport.reading === "decoded" ? " Frames decoded in order in the background. " : " "}
+              Per frame: {analysisReport.reading === "decoded" ? "waiting for a frame" : "seek"} {analysisReport.perFrameMs.frame} ms,
+              prepare{analysisReport.reading === "decoded" ? " (in the background)" : ""} {analysisReport.perFrameMs.prepare} ms,
               model {analysisReport.perFrameMs.model} ms, measure {analysisReport.perFrameMs.measure} ms.
             </p>}
             {summaries.length > 0 && <SummaryCard models={summaries} title={source === "camera" ? "Camera session summary" : "Video summary"} />}
