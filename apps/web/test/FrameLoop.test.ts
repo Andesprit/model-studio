@@ -428,6 +428,26 @@ describe("analyze first", () => {
     });
   });
 
+  it("starts without a live frame's model call running alongside it", async () => {
+    const video = seekableVideo(0.1);
+    const loop = new FrameLoop(video as unknown as HTMLVideoElement, {} as HTMLCanvasElement, { onStats: vi.fn(), onError: vi.fn() });
+    loops.push(loop);
+    let busy = false;
+    let overlapped = false;
+    const model = runtime(vi.fn(async () => {
+      if (busy) overlapped = true; // a session can't run two calls at once
+      busy = true;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      busy = false;
+      return {};
+    }));
+    loop.setModel(0, model, config); // a live frame starts on the paused video
+    loop.setModelPipeline(0, ropePipeline() as never); // and queues one more refresh
+    const report = await loop.analyze(30, () => {}, new AbortController().signal, true, 1);
+    expect(report).toMatchObject({ frames: 4 });
+    expect(overlapped).toBe(false);
+  });
+
   it("stops when aborted and goes back to live analysis", async () => {
     const { loop, model } = await analyzeSetup(10);
     const abort = new AbortController();

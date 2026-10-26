@@ -279,9 +279,10 @@ export class FrameLoop {
     overlap: boolean, batchSize: number, file?: Blob): Promise<AnalysisReport | null> {
     this.stop();
     this.finished = false;
+    // Set before waiting, so a refresh queued by the last live frame doesn't start another model call meanwhile.
+    this.analyzing = true;
     await this.inflight;
     this.replay = null;
-    this.analyzing = true;
     this.resetPipeline();
     this.renderer.clear();
     this.video.pause();
