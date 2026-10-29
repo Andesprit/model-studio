@@ -32,8 +32,7 @@ PARTICLE_MODEL = PIPE / "particle_detector/models/particle_detector_int8.tflite"
 PARTICLE_REF_MODEL = PIPE / "particle_detector/models/particle_detector.onnx"
 PARTICLE_IMAGE = PIPE / "particle_detector/data/learning_curve_level/lc_100/images/val/bomba-2_tube_3_frame_005750.jpg"
 # model studio's file with the app's checkpoint (tools/export_lamp_model.py)
-VORTEX_MODEL = PIPE / ("vortex_detector/models/lamp_r2_lite0_bg_strong_scale_tilt_steep_all_rig8_rigall_tail20_nogate/"
-                       "vortex_lamp_auto_lamp_r2_lite0_bg_strong_scale_tilt_steep_all_rig8_rigall_tail20_nogate_fp16_batch.onnx")
+VORTEX_MODEL = PIPE / "vortex_detector/models/lamp_vortex/lamp_vortex_fp16_batch.onnx"
 RIG_MODEL = APP.parent / "web/public/models/vortex_detector_fp32_with_pipeline.onnx"   # model studio's "Rig vortex"
 RIG_INT8 = PIPE / "vortex_detector/models/vortex_detector_int8.onnx"   # the INT8 model the fp32 file was made from
 RIG_IMAGE = PIPE / "vortex_detector/type-1_fixed/inferiorcrop/torcha_1486pm_2200rpm_C001H001S0001000367.png"   # a test frame

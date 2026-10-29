@@ -34,13 +34,11 @@ import torch.nn.functional as F
 
 APP = Path(__file__).resolve().parents[1]
 PIPE = Path(os.environ.get("PIPE", "D:/pipe"))
-# the live lamp model (model studio main, PR #8): the phone-footage augmentations on every training frame, rig frames at
-# 0.08 and a clean last 20 % of training (16_train_with_lamp.py --aug-all --aug-p-rig 0.08 --rig-p-all
-# --rig-clean-tail 0.2)
-CHECKPOINT = PIPE / "vortex_detector/runs/lamp_r2_lite0_bg_strong_scale_tilt_steep_motion_defocus_all_rig8_rigall_tail20/lite0_lamp_s0.pt"
-# model studio's file with this checkpoint (vortex_lamp_auto_fp16.onnx on main)
-STUDIO_MODEL = PIPE / ("vortex_detector/models/lamp_r2_lite0_bg_strong_scale_tilt_steep_all_rig8_rigall_tail20_nogate/"
-                       "vortex_lamp_auto_lamp_r2_lite0_bg_strong_scale_tilt_steep_all_rig8_rigall_tail20_nogate_fp16_batch.onnx")
+# lamp_vortex (vortex_detector models/lamp_vortex, run lamp_flip_tilt_416): the phone-footage model fine-tuned on real
+# full phone frames and distant lamps, with a left-right flip and +-45 deg tilt of the real frames
+CHECKPOINT = PIPE / "vortex_detector/models/lamp_vortex/lamp_vortex.pt"
+# model studio's file with this checkpoint (vortex_lamp_auto_fp16.onnx on model studio feat/lamp-vortex)
+STUDIO_MODEL = PIPE / "vortex_detector/models/lamp_vortex/lamp_vortex_fp16_batch.onnx"
 IMAGE = PIPE / "vortex_detector/lamp_fixed/frames/IMG_2117_f00006.png"
 OUT_INT8 = APP / "app/src/main/assets/vortex_lamp_rope_int8.onnx"
 CALIB_FRAMES = 200
