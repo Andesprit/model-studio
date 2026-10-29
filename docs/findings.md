@@ -371,8 +371,13 @@ bag it scores rope IoU 0.900 through the app (water gate 0.875, tube gate 0.886,
 also applied to the rig frames (8 % of them, none in the last 20 % of training; lamp frames 80 %), so the same file
 also finds the rig vortex tilted or with a room behind it: rig IoU turned 45° 0.55 -> 0.90, rig edge error on
 upright frames 0.82 -> 0.83 px, test round 0.909 -> 0.914. Every try is in that repo's
-`docs/phone_augmentation_all_frames.md`. What matters here (the orientation figures below were measured on an
-earlier model):
+`docs/phone_augmentation_all_frames.md`. Since 2026-10-29 the file is `lamp_vortex`: the same model fine-tuned on
+real full phone frames of five newer videos (IMG_2170-2174) and on distant lamps, with the real frames mirrored across
+the tube and turned up to ±45°. On 40 test frames of those videos, where the lamp is often small, rope IoU goes
+0.638 -> 0.722 (the farthest third 0.21 -> 0.46); real frames turned ±45° 0.89 / 0.89; test round 0.912 / 0.891 on its
+two videos; rig 0.946 with edge error 0.85 px. That repo's `docs/lamp_distance_research_handoff.md` has the details,
+including a two-pass zoom to the lamp (0.799) that the app does not do yet. What matters here (the orientation figures
+below were measured on an earlier model):
 
 - **Colour.** Any light colour works. The model takes gray, and the app converts frames before the model.
 - **Upright or sideways, chosen automatically.** A landscape picture (a phone held sideways, a webcam) is turned
